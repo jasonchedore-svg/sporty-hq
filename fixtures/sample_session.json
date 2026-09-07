@@ -1,0 +1,61 @@
+{
+  "session_id": "2026-09-07",
+  "status": "sample",
+  "stake_unit_usd": 25,
+  "stop_loss_usd": -100,
+  "edge_floor_pct": 3,
+  "max_bets": 4,
+  "pnl_usd": 16.25,
+      "clv_sum": 11.94,
+  "clv_n": 3,
+  "bets": [
+    {
+      "id": "sample01",
+      "time_et": "2026-09-07 13:05 ET",
+      "event": "New York Yankees @ Boston Red Sox",
+      "market": "ML",
+      "pick": "New York Yankees",
+      "odds_at_bet": 165,
+      "stake": 25,
+      "close_odds": 148,
+      "clv": 6.94,
+      "result": "win",
+      "pnl": 41.25,
+      "edge_note": "SAMPLE only — juice-removed ~7% vs consensus. Not a FanDuel fill.",
+      "event_id": "mlb-2026-0908-nyy-bos",
+      "sport": "baseball_mlb"
+    },
+    {
+      "id": "sample02",
+      "time_et": "2026-09-07 16:40 ET",
+      "event": "Kansas City Chiefs @ Philadelphia Eagles",
+      "market": "Spread",
+      "pick": "Philadelphia Eagles +3.5",
+      "odds_at_bet": 115,
+      "stake": 25,
+      "close_odds": 115,
+      "clv": 0,
+      "result": "loss",
+      "pnl": -25.0,
+      "edge_note": "SAMPLE only — flat close (CLV 0). Not a FanDuel fill.",
+      "event_id": "nfl-2026-0910-kc-phi",
+      "sport": "americanfootball_nfl"
+    },
+    {
+      "id": "sample03",
+      "time_et": "2026-09-07 19:10 ET",
+      "event": "Ohio State Buckeyes @ Notre Dame Fighting Irish",
+      "market": "Total",
+      "pick": "Over 48.5",
+      "odds_at_bet": 110,
+      "stake": 25,
+      "close_odds": 100,
+      "clv": 5.0,
+      "result": "push",
+      "pnl": 0.0,
+      "edge_note": "SAMPLE only — beat the close; result push. Not a FanDuel fill.",
+      "event_id": "ncaaf-2026-0912-osu-nd",
+      "sport": "americanfootball_ncaaf"
+    }
+  ]
+}

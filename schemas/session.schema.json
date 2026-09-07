@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/session.schema.json",
+  "title": "Sporty HQ session.json",
+  "description": "Locked v1 session file. bets[] are user-logged tickets only — never FanDuel fills.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "session_id",
+    "status",
+    "stake_unit_usd",
+    "stop_loss_usd",
+    "edge_floor_pct",
+    "max_bets",
+    "pnl_usd",
+    "clv_sum",
+    "clv_n",
+    "bets"
+  ],
+  "properties": {
+    "session_id": { "type": "string", "description": "ET calendar date YYYY-MM-DD" },
+    "status": { "type": "string", "enum": ["open", "stopped", "closed", "sample"] },
+    "stake_unit_usd": { "type": "number", "const": 25 },
+    "stop_loss_usd": { "type": "number", "const": -100 },
+    "edge_floor_pct": { "type": "number", "const": 3 },
+    "max_bets": { "type": "integer", "const": 4 },
+    "pnl_usd": { "type": "number" },
+    "clv_sum": { "type": "number" },
+    "clv_n": { "type": "integer", "minimum": 0 },
+    "bets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/bet" }
+    }
+  },
+  "$defs": {
+    "bet": {
+      "type": "object",
+      "required": [
+        "time_et",
+        "event",
+        "market",
+        "pick",
+        "odds_at_bet",
+        "stake",
+        "close_odds",
+        "clv",
+        "result",
+        "pnl",
+        "edge_note"
+      ],
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "time_et": { "type": "string" },
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "pick": { "type": "string" },
+        "odds_at_bet": { "type": "integer" },
+        "stake": { "type": "number" },
+        "close_odds": { "type": ["integer", "null"] },
+        "clv": { "type": ["number", "null"] },
+        "result": { "type": ["string", "null"] },
+        "pnl": { "type": ["number", "null"] },
+        "edge_note": { "type": "string" }
+      }
+    }
+  }
+}

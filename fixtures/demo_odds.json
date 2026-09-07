@@ -1,0 +1,267 @@
+[
+  {
+    "id": "mlb-2026-0908-nyy-bos",
+    "sport_key": "baseball_mlb",
+    "commence_time": "2026-09-08T23:10:00Z",
+    "home_team": "Boston Red Sox",
+    "away_team": "New York Yankees",
+    "bookmakers": [
+      {
+        "key": "fanduel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "New York Yankees", "price": 165},
+              {"name": "Boston Red Sox", "price": -190}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "New York Yankees", "price": 140},
+              {"name": "Boston Red Sox", "price": -160}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "pinnacle",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "New York Yankees", "price": 138},
+              {"name": "Boston Red Sox", "price": -158}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "New York Yankees", "price": 142},
+              {"name": "Boston Red Sox", "price": -165}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "nfl-2026-0910-kc-phi",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-09-11T00:20:00Z",
+    "home_team": "Philadelphia Eagles",
+    "away_team": "Kansas City Chiefs",
+    "bookmakers": [
+      {
+        "key": "fanduel",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": 115, "point": 3.5},
+              {"name": "Kansas City Chiefs", "price": -135, "point": -3.5}
+            ]
+          },
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": 150},
+              {"name": "Kansas City Chiefs", "price": -175}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": -110, "point": 3.5},
+              {"name": "Kansas City Chiefs", "price": -110, "point": -3.5}
+            ]
+          },
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": 130},
+              {"name": "Kansas City Chiefs", "price": -150}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "pinnacle",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": -108, "point": 3.5},
+              {"name": "Kansas City Chiefs", "price": -112, "point": -3.5}
+            ]
+          },
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": 128},
+              {"name": "Kansas City Chiefs", "price": -148}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": -112, "point": 3.5},
+              {"name": "Kansas City Chiefs", "price": -108, "point": -3.5}
+            ]
+          },
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Philadelphia Eagles", "price": 132},
+              {"name": "Kansas City Chiefs", "price": -155}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "ncaaf-2026-0912-osu-nd",
+    "sport_key": "americanfootball_ncaaf",
+    "commence_time": "2026-09-12T19:30:00Z",
+    "home_team": "Notre Dame Fighting Irish",
+    "away_team": "Ohio State Buckeyes",
+    "bookmakers": [
+      {
+        "key": "fanduel",
+        "markets": [
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": 110, "point": 48.5},
+              {"name": "Under", "price": -130, "point": 48.5}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "markets": [
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": -115, "point": 48.5},
+              {"name": "Under", "price": -105, "point": 48.5}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "pinnacle",
+        "markets": [
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": -118, "point": 48.5},
+              {"name": "Under", "price": -104, "point": 48.5}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "markets": [
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": -114, "point": 48.5},
+              {"name": "Under", "price": -106, "point": 48.5}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "nba-2026-0908-offseason",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-09-08T23:30:00Z",
+    "home_team": "Toronto Raptors",
+    "away_team": "New York Knicks",
+    "bookmakers": [
+      {
+        "key": "fanduel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Toronto Raptors", "price": 165},
+              {"name": "New York Knicks", "price": -190}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Toronto Raptors", "price": 140},
+              {"name": "New York Knicks", "price": -160}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "soccer-illiquid-demo",
+    "sport_key": "soccer_epl",
+    "commence_time": "2026-09-12T14:00:00Z",
+    "home_team": "Arsenal",
+    "away_team": "Chelsea",
+    "bookmakers": [
+      {
+        "key": "fanduel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Arsenal", "price": 150},
+              {"name": "Chelsea", "price": 180}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "draftkings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {"name": "Arsenal", "price": -110},
+              {"name": "Chelsea", "price": 250}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
