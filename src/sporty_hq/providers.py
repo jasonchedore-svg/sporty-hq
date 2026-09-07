@@ -59,7 +59,10 @@ def quotes_from_odds_api_payload(payload: Any, source: str) -> list[Quote]:
             book = normalize_book(str(bookmaker.get("key") or bookmaker.get("title") or ""))
             for market in bookmaker.get("markets") or []:
                 try:
-                    market_name = normalize_market(str(market.get("key") or market.get("market")))
+                    raw_key = str(market.get("key") or market.get("market") or "")
+                    if any(tok in raw_key.lower() for tok in ("prop", "player", "period", "alternate")):
+                        continue
+                    market_name = normalize_market(raw_key)
                 except ValueError:
                     continue
                 for outcome in market.get("outcomes") or []:
@@ -164,11 +167,11 @@ class TheOddsApiProvider:
             raise ValueError("THE_ODDS_API_KEY is not set")
         self._api_key = api_key
         self.sports = sports or [
-            "icehockey_nhl",
-            "basketball_nba",
-            "americanfootball_nfl",
             "baseball_mlb",
-            "americanfootball_cfl",
+            "americanfootball_nfl",
+            "americanfootball_ncaaf",
+            "basketball_nba",
+            "icehockey_nhl",
         ]
         self.regions = regions
         self.markets = markets

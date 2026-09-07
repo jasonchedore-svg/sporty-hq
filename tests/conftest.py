@@ -14,7 +14,7 @@ from sporty_hq.storage import Store
 REPO = Path(__file__).resolve().parents[1]
 DEMO_JSON = REPO / "fixtures" / "demo_odds.json"
 DEMO_CSV = REPO / "fixtures" / "demo_odds.csv"
-DEMO_CLOSES = REPO / "fixtures" / "demo_closes.json"
+SAMPLE_SESSION = REPO / "fixtures" / "sample_session.json"
 
 
 @pytest.fixture

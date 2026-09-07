@@ -74,10 +74,13 @@ def edge(fair_prob: float, decimal_odds: float) -> float:
 
 
 def clv_pct(odds_at_bet: int, close_odds: int) -> float:
-    """Price CLV: (bet_decimal / close_decimal - 1) * 100.
+    """American vs close on the same market.
 
-    Positive means you got a better number than the close.
+    Flat (same American number) is 0. Positive means you beat the close.
+    Judge process on ~100+ bets — small-n CLV is directional only.
     """
+    if int(odds_at_bet) == int(close_odds):
+        return 0.0
     bet_dec = american_to_decimal(odds_at_bet)
     close_dec = american_to_decimal(close_odds)
     return (bet_dec / close_dec - 1.0) * 100.0

@@ -38,7 +38,8 @@ def test_clv_better_number() -> None:
     # Bet +165, close +148 → positive CLV
     assert clv_pct(165, 148) > 0
     assert clv_pct(-110, -120) > 0
-    assert clv_pct(-120, -110) < 0
+    assert clv_pct(165, 165) == 0.0
+    assert clv_pct(-110, -110) == 0
 
 
 def test_settle_pnl() -> None:

@@ -21,7 +21,7 @@ def _bet(**kwargs) -> Bet:
         close_odds=148,
         clv_pct=8.16,
         pnl=41.25,
-        notes="demo",
+        edge_note="demo",
     )
     data.update(kwargs)
     return Bet(**data)
@@ -39,9 +39,11 @@ def test_summarize_and_markdown() -> None:
     assert summary.total_pnl == 16.25
     assert summary.avg_clv and summary.avg_clv > 0
     md = render_markdown(bets)
-    assert "odds_at_bet" in md
-    assert "CLV" in md
-    assert "not gambling advice" in md.lower() or "not gambling advice" in md.lower() or "research" in md.lower()
+    assert "Time (ET)" in md
+    assert "Pick" in md
+    assert "Edge note" in md
+    assert "not gambling advice" in md.lower() or "research" in md.lower()
     html = render_html(bets)
     assert "Sporty HQ" in html
     assert "41.25" in html or "+41.25" in html
+    assert "Time (ET)" in html

@@ -21,6 +21,7 @@ from sporty_hq.odds_math import clv_pct, parse_american, settle_pnl
 from sporty_hq.playbook import PlaybookViolation, session_snapshot, validate_new_bet
 from sporty_hq.providers import load_provider
 from sporty_hq.reports import render_html, render_markdown, summarize
+from sporty_hq.session import persist_live_session, read_session, session_row_to_bet
 from sporty_hq.storage import Store, utcnow
 
 app = typer.Typer(
@@ -33,7 +34,7 @@ console = Console()
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FIXTURE = REPO_ROOT / "fixtures" / "demo_odds.json"
-DEFAULT_CLOSES = REPO_ROOT / "fixtures" / "demo_closes.json"
+DEFAULT_SAMPLE_SESSION = REPO_ROOT / "fixtures" / "sample_session.json"
 
 
 def _settings(
@@ -55,6 +56,18 @@ def _store(settings: Settings) -> Store:
 
 def _short_id() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def _sync_session(settings: Settings, store: Store, now: datetime | None = None) -> None:
+    persist_live_session(
+        settings.session_path,
+        store.list_bets(),
+        now=now or utcnow(),
+        stake_unit_usd=settings.unit_stake,
+        stop_loss_usd=settings.session_stop,
+        edge_floor_pct=round(settings.min_edge * 100.0, 4),
+        max_bets=settings.max_bets_per_session,
+    )
 
 
 @app.callback()
@@ -123,14 +136,19 @@ def scan(
     _write_scan_markdown(settings, stored)
     if json_out:
         console.print_json(data=[c.to_row() for c in stored])
+    elif not stored:
+        console.print("Quiet: nothing cleared ≥3% edge.")
     else:
         _print_candidates(stored, settings.min_edge)
     if alerts:
-        bus = AlertBus.from_settings(store, settings)
-        sent = bus.new_candidates(stored)
-        console.print(f"Alerts sent: {sent} (deduped against prior keys)")
+        if not stored:
+            console.print("Quiet: no new_candidate alerts.")
+        else:
+            bus = AlertBus.from_settings(store, settings)
+            sent = bus.new_candidates(stored)
+            console.print(f"Alerts sent: {sent} (deduped against prior keys)")
     console.print(
-        "Greenlight required for full-auto — place any ticket on FanDuel mobile yourself."
+        "Hybrid research/alerts only — place any ticket on FanDuel mobile yourself. HQ never fills."
     )
 
 
@@ -140,10 +158,10 @@ def log_bet(
     event_id: Optional[str] = typer.Option(None, "--event-id"),
     event: Optional[str] = typer.Option(None, "--event", help="Event name if not using a candidate"),
     market: Optional[str] = typer.Option(None, "--market", help="ml | spread | total"),
-    selection: Optional[str] = typer.Option(None, "--selection"),
+    selection: Optional[str] = typer.Option(None, "--pick", "--selection", help="Pick (straight)"),
     odds: Optional[str] = typer.Option(None, "--odds", help="American odds at bet, e.g. +165 or -110"),
     stake: Optional[float] = typer.Option(None, "--stake", help="Flat unit (default $25)"),
-    notes: str = typer.Option("", "--notes"),
+    edge_note: str = typer.Option("", "--edge-note", "--notes", help="Edge note column"),
     sport: str = typer.Option("", "--sport"),
     point: Optional[float] = typer.Option(None, "--point"),
     force: bool = typer.Option(False, "--force", help="Override session cap / stop"),
@@ -200,9 +218,10 @@ def log_bet(
         point=cand.point if cand is not None else point,
         odds_at_bet=american,
         stake=stake_v,
-        notes=notes or ("from candidate" if cand else ""),
+        edge_note=edge_note or (cand.rationale if cand else ""),
     )
     store.insert_bet(bet)
+    _sync_session(settings, store, now)
     if abs(stake_v - settings.unit_stake) > 1e-9:
         console.print(
             f"[yellow]Note:[/yellow] playbook unit is ${settings.unit_stake:.0f}; logged ${stake_v:.2f}."
@@ -224,7 +243,7 @@ def settle(
     bet_id: str = typer.Argument(..., help="Bet id from log-bet"),
     result: str = typer.Option(..., "--result", help="win | loss | push | void"),
     close_odds: Optional[str] = typer.Option(None, "--close-odds", help="American close, e.g. +145"),
-    notes: Optional[str] = typer.Option(None, "--notes"),
+    notes: Optional[str] = typer.Option(None, "--edge-note", "--notes"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
     """Settle a logged bet and compute P&L + CLV vs close."""
@@ -243,9 +262,10 @@ def settle(
         bet.clv_pct = round(clv_pct(bet.odds_at_bet, bet.close_odds), 2)
     bet.settled_at = utcnow()
     if notes:
-        bet.notes = (bet.notes + " | " if bet.notes else "") + notes
+        bet.edge_note = (bet.edge_note + " | " if bet.edge_note else "") + notes
     store.update_bet(bet)
-    clv_txt = "—" if bet.clv_pct is None else f"{bet.clv_pct:+.2f}%"
+    _sync_session(settings, store)
+    clv_txt = "0" if bet.clv_pct == 0 else ("—" if bet.clv_pct is None else f"{bet.clv_pct:+.2f}%")
     console.print(
         f"Settled {bet.id} {bet.result} pnl ${bet.pnl:+.2f} CLV {clv_txt} "
         f"(bet {_fmt_odds(bet.odds_at_bet)} close {_fmt_odds(bet.close_odds)})"
@@ -264,9 +284,9 @@ def clv_report(
     bets = store.list_bets()
     kind = fmt.strip().lower()
     if kind in {"md", "markdown"}:
-        text = render_markdown(bets, settings.unit_stake)
+        text = render_markdown(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
     elif kind == "html":
-        text = render_html(bets, settings.unit_stake)
+        text = render_html(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
     elif kind == "json":
         summary = summarize(bets, settings.unit_stake)
         text = json.dumps(
@@ -296,10 +316,10 @@ def alert_test(
         type=AlertType.TEST,
         title="Sporty HQ test alert",
         body=(
-            "If you see this, notifiers are wired. "
-            "Slack uses SLACK_WEBHOOK_URL. "
-            "SMS: point SPORTY_HQ_WEBHOOK_URL at IFTTT Webhooks or a Twilio Function. "
-            "HQ still does not place bets."
+            "Chat (console) + file log are v1. "
+            "Generic webhook fires if SPORTY_HQ_WEBHOOK_URL is set. "
+            "Slack incoming webhook is optional later (SPORTY_HQ_ENABLE_SLACK + SLACK_WEBHOOK_URL). "
+            "SMS is later. HQ still does not place bets."
         ),
         dedup_key=f"test:{_short_id()}",
         payload={"version": __version__},
@@ -312,14 +332,17 @@ def alert_test(
 
 @app.command()
 def remind(
-    minutes: Optional[int] = typer.Option(None, "--minutes", help="Pre-game window (default 45)"),
+    min_minutes: Optional[int] = typer.Option(None, "--min-minutes", help="Pre-game window start (default 30)"),
+    max_minutes: Optional[int] = typer.Option(None, "--max-minutes", help="Pre-game window end (default 60)"),
     kind: str = typer.Option("all", "--type", help="pre_game | settle | all"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Pre-game reminders (default 45m) and settle reminders for open tickets."""
+    """Pre-game reminders 30–60m before tip on flagged (≥3%) plays only. Quiet otherwise."""
     settings = _settings(data_dir)
-    if minutes is not None:
-        settings.remind_minutes = minutes
+    if min_minutes is not None:
+        settings.remind_min_minutes = min_minutes
+    if max_minutes is not None:
+        settings.remind_max_minutes = max_minutes
     store = _store(settings)
     bus = AlertBus.from_settings(store, settings)
     now = utcnow()
@@ -332,16 +355,41 @@ def remind(
         sent += _pre_game_reminders(store, bus, settings, now)
     if wanted in {"settle", "all"}:
         sent += _settle_reminders(store, bus, now)
-    console.print(f"Reminders sent: {sent}")
+    if sent == 0:
+        console.print(
+            f"Quiet: nothing flagged ≥{settings.min_edge:.0%} in the "
+            f"{settings.remind_min_minutes}–{settings.remind_max_minutes}m window."
+        )
+    else:
+        console.print(f"Reminders sent: {sent}")
+
+
+@app.command()
+def session(
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Print data/session.json (locked v1 fields). Syncs from user-logged bets only."""
+    settings = _settings(data_dir)
+    store = _store(settings)
+    state = persist_live_session(
+        settings.session_path,
+        store.list_bets(),
+        now=utcnow(),
+        stake_unit_usd=settings.unit_stake,
+        stop_loss_usd=settings.session_stop,
+        edge_floor_pct=round(settings.min_edge * 100.0, 4),
+        max_bets=settings.max_bets_per_session,
+    )
+    console.print_json(data=state.to_json_dict())
 
 
 @app.command()
 def demo(
     data_dir: Optional[Path] = typer.Option(None, "--data-dir"),
     fixture: Path = typer.Option(DEFAULT_FIXTURE, "--fixture"),
-    closes: Path = typer.Option(DEFAULT_CLOSES, "--closes"),
+    sample_session: Path = typer.Option(DEFAULT_SAMPLE_SESSION, "--sample-session"),
 ) -> None:
-    """End-to-end fixture run: ingest → scan → sample bets → settle → CLV report."""
+    """Fixture scan (MLB/NFL first) + sample CLV report. Does not fake fills or place bets."""
     settings = _settings(data_dir)
     store = _store(settings)
     provider = load_provider("fixture", path=fixture)
@@ -354,75 +402,32 @@ def demo(
     )
     stored = store.replace_candidates(batch_id, candidates)
     _write_scan_markdown(settings, stored)
-    console.print(f"[bold]Demo ingest[/bold] {len(quotes)} quotes → {len(stored)} candidates (≥ {settings.min_edge:.0%} edge)")
-    _print_candidates(stored, settings.min_edge)
+    console.print(
+        f"[bold]Demo ingest[/bold] {len(quotes)} quotes → {len(stored)} candidates "
+        f"(≥ {settings.min_edge:.0%} edge; MLB+NFL first, no fake fills)"
+    )
+    if stored:
+        _print_candidates(stored, settings.min_edge)
+    else:
+        console.print("Quiet: nothing cleared ≥3% edge.")
 
-    now = utcnow()
-    logged: list[Bet] = []
-    picked: list[Candidate] = []
-    seen_events: set[str] = set()
-    for cand in stored:
-        if cand.event_id in seen_events:
-            continue
-        seen_events.add(cand.event_id)
-        picked.append(cand)
-        if len(picked) == 2:
-            break
-    if len(picked) < 2:
-        raise typer.Exit("Demo fixture should produce candidates on at least two events")
-    for cand in picked:
-        validate_new_bet(
-            store,
-            settings,
-            event_id=cand.event_id,
-            market=cand.market,
-            stake=settings.unit_stake,
-            now=now,
-        )
-        bet = Bet(
-            id=_short_id(),
-            logged_at=now,
-            event_id=cand.event_id,
-            event_name=cand.event_name,
-            sport=cand.sport,
-            commence_at=cand.commence_at,
-            market=cand.market,
-            selection=cand.selection,
-            point=cand.point,
-            odds_at_bet=cand.american_odds,
-            stake=settings.unit_stake,
-            notes="demo (not a real wager)",
-        )
-        store.insert_bet(bet)
-        logged.append(bet)
-        console.print(f"Logged demo bet {bet.id} {bet.event_name} {bet.selection} {_fmt_odds(bet.odds_at_bet)}")
-
-    close_map = _load_closes(closes)
-    # First demo ticket wins with +CLV; second loses still beating the close.
-    results = ["win", "loss"]
-    for bet, result in zip(logged, results, strict=False):
-        key = f"{bet.event_id}|{bet.market}|{bet.selection.lower()}"
-        close = close_map.get(key)
-        if close is None:
-            close = bet.odds_at_bet - 15 if bet.odds_at_bet > 0 else bet.odds_at_bet + 10
-        bet.result = result
-        bet.close_odds = close
-        bet.clv_pct = round(clv_pct(bet.odds_at_bet, close), 2)
-        bet.pnl = settle_pnl(result, bet.stake, bet.odds_at_bet)
-        bet.settled_at = utcnow()
-        store.update_bet(bet)
-        console.print(
-            f"Settled {bet.id} {result} pnl ${bet.pnl:+.2f} CLV {bet.clv_pct:+.2f}% "
-            f"(close {_fmt_odds(close)})"
-        )
-
+    sample = read_session(sample_session)
+    dest = settings.data_dir / "sample_session.json"
+    dest.write_text(json.dumps(sample.to_json_dict(), indent=2) + "\n", encoding="utf-8")
+    sample_bets = [session_row_to_bet(row) for row in sample.bets]
     report_path = settings.data_dir / "clv-report.md"
     html_path = settings.data_dir / "clv-report.html"
-    bets = store.list_bets()
-    report_path.write_text(render_markdown(bets, settings.unit_stake), encoding="utf-8")
-    html_path.write_text(render_html(bets, settings.unit_stake), encoding="utf-8")
-    console.print(render_markdown(bets, settings.unit_stake))
-    console.print(f"Wrote {report_path} and {html_path}")
+    md = render_markdown(
+        sample_bets, settings.unit_stake, sample=True, judge_n=settings.clv_judge_n
+    )
+    report_path.write_text(md, encoding="utf-8")
+    html_path.write_text(
+        render_html(sample_bets, settings.unit_stake, sample=True, judge_n=settings.clv_judge_n),
+        encoding="utf-8",
+    )
+    console.print(md)
+    console.print(f"Wrote {report_path}, {html_path}, and {dest}")
+    console.print("Hybrid: research/alerts only — never fake fills or place FanDuel bets.")
     console.print(DISCLAIMER)
 
 
@@ -431,7 +436,7 @@ def _print_candidates(candidates: list[Candidate], min_edge: float) -> None:
     table.add_column("id", justify="right", no_wrap=True)
     table.add_column("event", overflow="fold")
     table.add_column("market", no_wrap=True)
-    table.add_column("selection", overflow="fold")
+    table.add_column("pick", overflow="fold")
     table.add_column("odds", justify="right", no_wrap=True)
     table.add_column("edge %", justify="right", no_wrap=True)
     table.add_column("rationale", overflow="fold")
@@ -458,7 +463,7 @@ def _write_scan_markdown(settings: Settings, candidates: list[Candidate]) -> Non
         "",
         f"Min edge: {settings.min_edge:.0%} after juice · target {settings.target_book}",
         "",
-        "| id | event | market | selection | odds | edge % | rationale |",
+        "| id | event | market | pick | odds | edge % | rationale |",
         "|---|---|---|---|---:|---:|---|",
     ]
     for cand in candidates:
@@ -475,33 +480,35 @@ def _write_scan_markdown(settings: Settings, candidates: list[Candidate]) -> Non
 
 
 def _pre_game_reminders(store: Store, bus: AlertBus, settings: Settings, now: datetime) -> int:
-    window = timedelta(minutes=settings.remind_minutes)
-    horizon = now + window
+    """Only flagged scan candidates (≥ edge floor) whose tip is 30–60 minutes out."""
+    lo = timedelta(minutes=settings.remind_min_minutes)
+    hi = timedelta(minutes=settings.remind_max_minutes)
     seen_events: set[str] = set()
     sent = 0
-    watch = list(store.list_candidates()) + list(store.open_bets())
-    for item in watch:
-        event_id = item.event_id
-        if event_id in seen_events:
+    for cand in store.list_candidates():
+        if cand.edge_pct + 1e-9 < settings.min_edge * 100.0:
             continue
-        commence = item.commence_at
+        if cand.event_id in seen_events:
+            continue
+        commence = cand.commence_at
         if commence is None:
             continue
-        if not (now <= commence <= horizon):
+        delta = commence - now
+        if not (lo <= delta <= hi):
             continue
-        seen_events.add(event_id)
-        name = item.event_name
-        mins = int((commence - now).total_seconds() // 60)
+        seen_events.add(cand.event_id)
+        mins = int(delta.total_seconds() // 60)
+        line = "" if cand.point is None else f" {cand.point}"
         alert = Alert(
             type=AlertType.PRE_GAME_REMINDER,
-            title=f"Pre-game ({mins}m): {name}",
+            title=f"Pre-game ({mins}m): {cand.event_name}",
             body=(
-                f"{name} starts {commence.isoformat()}. "
-                "Confirm the number on FanDuel, log-bet if you take it, one open ticket per event. "
-                "HQ does not place bets."
+                f"Flagged {cand.selection}{line} {display_market(cand.market)} @ {cand.american_odds:+d} "
+                f"({cand.edge_pct:.1f}% edge). Tip {commence.isoformat()}. "
+                "Confirm on FanDuel mobile yourself — HQ does not place bets."
             ),
-            dedup_key=f"pre_game:{event_id}:{settings.remind_minutes}",
-            payload={"event_id": event_id, "commence_at": commence.isoformat()},
+            dedup_key=f"pre_game:{cand.event_id}:{settings.remind_min_minutes}-{settings.remind_max_minutes}",
+            payload={"event_id": cand.event_id, "commence_at": commence.isoformat()},
         )
         if bus.publish(alert):
             sent += 1
@@ -526,17 +533,6 @@ def _settle_reminders(store: Store, bus: AlertBus, now: datetime) -> int:
         if bus.publish(alert):
             sent += 1
     return sent
-
-
-def _load_closes(path: Path) -> dict[str, int]:
-    if not path.exists():
-        return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    mapping: dict[str, int] = {}
-    for row in payload.get("closes", payload if isinstance(payload, list) else []):
-        key = f"{row['event_id']}|{normalize_market(row['market'])}|{str(row['selection']).lower()}"
-        mapping[key] = parse_american(row["close_odds"])
-    return mapping
 
 
 def _fmt_odds(value: int | None) -> str:

@@ -1,7 +1,7 @@
 event_id,sport,commence_time,home_team,away_team,book,market,selection,price,point
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,fanduel,h2h,Toronto Maple Leafs,155,
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,fanduel,h2h,Ottawa Senators,-180,
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,draftkings,h2h,Toronto Maple Leafs,130,
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,draftkings,h2h,Ottawa Senators,-150,
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,pinnacle,h2h,Toronto Maple Leafs,128,
-nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,pinnacle,h2h,Ottawa Senators,-148,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,fanduel,h2h,Toronto Blue Jays,155,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,fanduel,h2h,New York Yankees,-180,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,draftkings,h2h,Toronto Blue Jays,130,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,draftkings,h2h,New York Yankees,-150,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,pinnacle,h2h,Toronto Blue Jays,128,
+mlb-csv-2026-0909-tor-nyy,baseball_mlb,2026-09-09T23:07:00Z,New York Yankees,Toronto Blue Jays,pinnacle,h2h,New York Yankees,-148,

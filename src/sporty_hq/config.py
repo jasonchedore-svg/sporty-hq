@@ -34,9 +34,12 @@ class Settings(BaseSettings):
     session_stop: float = -100.0
     max_bets_per_session: int = 4
     target_book: str = "fanduel"
-    remind_minutes: int = 45
+    remind_min_minutes: int = 30
+    remind_max_minutes: int = 60
+    clv_judge_n: int = 100
     region: str = "on"
-    timezone: str = "America/Toronto"
+    timezone: str = "America/New_York"
+    enable_slack: bool = False
     webhook_url: SecretStr | None = None
     slack_webhook_url: SecretStr | None = Field(
         default=None,
@@ -69,6 +72,10 @@ class Settings(BaseSettings):
     @property
     def alerts_log_path(self) -> Path:
         return self.data_dir / "alerts.jsonl"
+
+    @property
+    def session_path(self) -> Path:
+        return self.data_dir / "session.json"
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)

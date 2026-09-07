@@ -125,7 +125,7 @@ class Bet:
     close_odds: int | None = None
     clv_pct: float | None = None
     pnl: float | None = None
-    notes: str = ""
+    edge_note: str = ""
     settled_at: datetime | None = None
     point: float | None = None
 
@@ -133,11 +133,20 @@ class Bet:
     def is_open(self) -> bool:
         return self.result is None
 
+    @property
+    def pick(self) -> str:
+        if self.point is None:
+            return self.selection
+        if self.market == "spread":
+            return f"{self.selection} {self.point:+g}"
+        return f"{self.selection} {self.point:g}"
+
     def to_row(self) -> dict[str, Any]:
         row = asdict(self)
         for key in ("logged_at", "commence_at", "settled_at"):
             value = getattr(self, key)
             row[key] = value.isoformat() if value else None
+        row["pick"] = self.pick
         return row
 
 

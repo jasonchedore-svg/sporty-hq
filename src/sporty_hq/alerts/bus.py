@@ -28,7 +28,8 @@ class AlertBus:
         if settings.secret_configured("webhook_url"):
             assert settings.webhook_url is not None
             notifiers.append(WebhookNotifier(settings.webhook_url.get_secret_value()))
-        if settings.secret_configured("slack_webhook_url"):
+        # Slack incoming webhook is optional (later). Do not require OAuth or block v1.
+        if settings.enable_slack and settings.secret_configured("slack_webhook_url"):
             assert settings.slack_webhook_url is not None
             notifiers.append(SlackNotifier(settings.slack_webhook_url.get_secret_value()))
         return cls(store, notifiers)

@@ -14,6 +14,20 @@ from sporty_hq.odds_math import (
     median,
     multiplicative_devig,
 )
+from sporty_hq.sports import (
+    family,
+    filter_v1_quotes,
+    soccer_is_liquid,
+    sport_rank,
+)
+from sporty_hq.odds_math import (
+    american_to_decimal,
+    edge,
+    implied_prob,
+    juice_pct,
+    median,
+    multiplicative_devig,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +35,7 @@ class ScanConfig:
     target_book: str = "fanduel"
     min_edge: float = 0.03
     home_prob_bump: float = 0.0  # model stub: add to home-team fair prob, then renormalize
+    apply_calendar: bool = True
 
 
 def _book_sides(quotes: list[Quote]) -> dict[str, dict[str, Quote]]:
@@ -65,14 +80,17 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
     Optional ``home_prob_bump`` is a placeholder model until a real one exists.
     """
     config = config or ScanConfig()
+    pool = filter_v1_quotes(quotes) if config.apply_calendar else list(quotes)
     target = normalize_book(config.target_book)
     grouped: dict[tuple, list[Quote]] = defaultdict(list)
-    for quote in quotes:
+    for quote in pool:
         # Totals share a point (5.5/5.5). Spreads use opposite signs (+3.5/-3.5) — group on abs.
         grouped[_market_group_key(quote)].append(quote)
 
     candidates: list[Candidate] = []
     for (_event_id, market, point), group in grouped.items():
+        if family(group[0].sport) == "soccer" and not soccer_is_liquid(group):
+            continue
         sides_by_book = _book_sides(group)
         if target not in sides_by_book:
             continue
@@ -138,7 +156,9 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
                 )
             )
 
-    candidates.sort(key=lambda c: (-c.edge_pct, c.event_name, c.selection))
+    candidates.sort(
+        key=lambda c: (sport_rank(c.sport), -c.edge_pct, c.event_name, c.selection)
+    )
     return candidates
 
 

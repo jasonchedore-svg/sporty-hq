@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS bets (
     close_odds INTEGER,
     clv_pct REAL,
     pnl REAL,
-    notes TEXT NOT NULL DEFAULT '',
+    edge_note TEXT NOT NULL DEFAULT '',
     settled_at TEXT
 );
 
@@ -119,6 +119,7 @@ class Store:
     def _init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            _migrate_bets(conn)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -241,7 +242,7 @@ class Store:
                 INSERT INTO bets (
                     id, logged_at, event_id, event_name, sport, commence_at, market,
                     selection, point, odds_at_bet, stake, result, close_odds, clv_pct,
-                    pnl, notes, settled_at
+                    pnl, edge_note, settled_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -260,7 +261,7 @@ class Store:
                     bet.close_odds,
                     bet.clv_pct,
                     bet.pnl,
-                    bet.notes,
+                    bet.edge_note,
                     bet.settled_at.isoformat() if bet.settled_at else None,
                 ),
             )
@@ -269,7 +270,7 @@ class Store:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE bets SET result=?, close_odds=?, clv_pct=?, pnl=?, notes=?, settled_at=?
+                UPDATE bets SET result=?, close_odds=?, clv_pct=?, pnl=?, edge_note=?, settled_at=?
                 WHERE id=?
                 """,
                 (
@@ -277,7 +278,7 @@ class Store:
                     bet.close_odds,
                     bet.clv_pct,
                     bet.pnl,
-                    bet.notes,
+                    bet.edge_note,
                     bet.settled_at.isoformat() if bet.settled_at else None,
                     bet.id,
                 ),
@@ -334,6 +335,21 @@ class Store:
                 "SELECT 1 FROM alerts_sent WHERE dedup_key = ?", (dedup_key,)
             ).fetchone()
         return row is not None
+
+
+def _row_edge_note(row: sqlite3.Row) -> str:
+    keys = row.keys()
+    if "edge_note" in keys:
+        return row["edge_note"] or ""
+    if "notes" in keys:
+        return row["notes"] or ""
+    return ""
+
+
+def _migrate_bets(conn: sqlite3.Connection) -> None:
+    names = {r[1] for r in conn.execute("PRAGMA table_info(bets)").fetchall()}
+    if "notes" in names and "edge_note" not in names:
+        conn.execute("ALTER TABLE bets RENAME COLUMN notes TO edge_note")
 
 
 def _quote_from_row(row: sqlite3.Row) -> Quote:
@@ -398,6 +414,6 @@ def _bet_from_row(row: sqlite3.Row) -> Bet:
         close_odds=int(row["close_odds"]) if row["close_odds"] is not None else None,
         clv_pct=float(row["clv_pct"]) if row["clv_pct"] is not None else None,
         pnl=float(row["pnl"]) if row["pnl"] is not None else None,
-        notes=row["notes"] or "",
+        edge_note=_row_edge_note(row),
         settled_at=parse_dt(row["settled_at"]),
     )
