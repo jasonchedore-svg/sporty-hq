@@ -84,3 +84,19 @@ def test_webhook_error_surfaces(monkeypatch, store) -> None:
     bus = AlertBus(store, [WebhookNotifier("https://example.test/hook")])
     with pytest.raises(RuntimeError, match="webhook"):
         bus.publish(_alert("err"))
+
+
+def test_from_settings_v1_skips_slack_even_if_url_set(settings, store) -> None:
+    from pydantic import SecretStr
+
+    settings.slack_webhook_url = SecretStr("https://hooks.slack.com/services/T/B/X")
+    settings.enable_slack = False
+    settings.webhook_url = SecretStr("https://example.test/hook")
+    names = [n.name for n in AlertBus.from_settings(store, settings).notifiers]
+    assert names == ["console", "file", "webhook"]
+
+
+def test_from_settings_v1_console_file_only(settings, store) -> None:
+    names = [n.name for n in AlertBus.from_settings(store, settings).notifiers]
+    assert names == ["console", "file"]
+    assert "slack" not in names

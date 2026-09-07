@@ -89,6 +89,8 @@ def test_alert_test_and_remind(data_dir: Path) -> None:
     r = runner.invoke(app, ["alert-test", "--data-dir", str(data_dir)])
     assert r.exit_code == 0, r.output
     assert (data_dir / "alerts.jsonl").exists()
+    assert "published via: console, file" in r.output
+    assert "Slack skipped" in r.output
 
     store = Store(data_dir / "sporty.db")
     flagged_tip = datetime.now(timezone.utc) + timedelta(minutes=40)

@@ -139,16 +139,16 @@ Live default sports: MLB, NFL, NCAAF, then NBA/NHL (calendar still applies). Pro
 
 ## Alert bus (v1)
 
-Priority: **console (chat)** + **JSONL file** (`data/alerts.jsonl`). **Generic webhook** if `SPORTY_HQ_WEBHOOK_URL` is set.
-
-Slack incoming webhook is **optional later** (`SPORTY_HQ_ENABLE_SLACK=true` and `SLACK_WEBHOOK_URL`). No Slack OAuth. **SMS is later** (same generic webhook can feed IFTTT/Twilio when you want it).
+**Required:** console (chat) + JSONL file (`data/alerts.jsonl`).  
+**Optional now:** generic webhook (`SPORTY_HQ_WEBHOOK_URL`) — JSON POST, including IFTTT/Twilio later for SMS.  
+**Not required to merge or run:** Slack. Incoming webhook can be wired later with `SPORTY_HQ_ENABLE_SLACK=true` and `SLACK_WEBHOOK_URL`. There is **no Slack OAuth** and CI does not use Slack.
 
 | Type | When |
 |---|---|
 | `new_candidate` | `scan --alerts` and edge ≥ 3%. Quiet otherwise. |
 | `pre_game_reminder` | `remind`, **30–60 min** before tip, **flagged candidates only** |
 | `settle_reminder` | Open **user-logged** tickets whose event has started |
-| `test` | `alert-test` |
+| `test` | `alert-test` (console + file; webhook if set) |
 
 Dedup is SQLite-unique on `dedup_key`.
 
@@ -166,10 +166,10 @@ Dedup is SQLite-unique on `dedup_key`.
 | `SPORTY_HQ_TARGET_BOOK` | `fanduel` | Book to score |
 | `SPORTY_HQ_REMIND_MIN_MINUTES` | `30` | Pre-game window start |
 | `SPORTY_HQ_REMIND_MAX_MINUTES` | `60` | Pre-game window end |
-| `SPORTY_HQ_WEBHOOK_URL` | unset | Generic JSON POST |
-| `SPORTY_HQ_ENABLE_SLACK` | `false` | Opt-in Slack later |
-| `SLACK_WEBHOOK_URL` | unset | Incoming webhook (unused unless enable_slack) |
+| `SPORTY_HQ_WEBHOOK_URL` | unset | Generic JSON POST (v1 optional) |
 | `THE_ODDS_API_KEY` | unset | Live odds |
+
+Slack (`SPORTY_HQ_ENABLE_SLACK`, `SLACK_WEBHOOK_URL`) is documented for a later pass and is off by default.
 
 **Never commit secrets.** `.env` is gitignored.
 

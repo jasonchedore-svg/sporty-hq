@@ -316,10 +316,9 @@ def alert_test(
         type=AlertType.TEST,
         title="Sporty HQ test alert",
         body=(
-            "Chat (console) + file log are v1. "
-            "Generic webhook fires if SPORTY_HQ_WEBHOOK_URL is set. "
-            "Slack incoming webhook is optional later (SPORTY_HQ_ENABLE_SLACK + SLACK_WEBHOOK_URL). "
-            "SMS is later. HQ still does not place bets."
+            "v1 notifiers: console + file"
+            + (", generic webhook" if settings.secret_configured("webhook_url") else "")
+            + ". Slack/SMS are later — not required. HQ does not place bets."
         ),
         dedup_key=f"test:{_short_id()}",
         payload={"version": __version__},
@@ -327,6 +326,8 @@ def alert_test(
     bus.publish(alert)
     channels = [n.name for n in bus.notifiers]
     console.print(f"Test alert published via: {', '.join(channels)}")
+    if "slack" not in channels:
+        console.print("Slack skipped (optional later; no OAuth).")
     console.print(f"File log: {settings.alerts_log_path}")
 
 

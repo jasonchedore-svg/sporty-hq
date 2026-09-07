@@ -21,6 +21,10 @@ class AlertBus:
 
     @classmethod
     def from_settings(cls, store: Store, settings: Settings, *, console: bool = True) -> AlertBus:
+        """v1: console + file, plus generic webhook if configured.
+
+        Slack incoming webhook is opt-in later (``enable_slack``). No OAuth.
+        """
         notifiers: list[Notifier] = []
         if console:
             notifiers.append(ConsoleNotifier())
@@ -28,7 +32,6 @@ class AlertBus:
         if settings.secret_configured("webhook_url"):
             assert settings.webhook_url is not None
             notifiers.append(WebhookNotifier(settings.webhook_url.get_secret_value()))
-        # Slack incoming webhook is optional (later). Do not require OAuth or block v1.
         if settings.enable_slack and settings.secret_configured("slack_webhook_url"):
             assert settings.slack_webhook_url is not None
             notifiers.append(SlackNotifier(settings.slack_webhook_url.get_secret_value()))

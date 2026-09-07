@@ -73,7 +73,7 @@ class WebhookNotifier:
 
 
 class SlackNotifier:
-    """Slack incoming webhook. Uses ``text`` so it works without bot tokens."""
+    """Optional later: Slack incoming webhook only. No OAuth, not part of v1."""
 
     name = "slack"
 
