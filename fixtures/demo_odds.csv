@@ -1,0 +1,7 @@
+event_id,sport,commence_time,home_team,away_team,book,market,selection,price,point
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,fanduel,h2h,Toronto Maple Leafs,155,
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,fanduel,h2h,Ottawa Senators,-180,
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,draftkings,h2h,Toronto Maple Leafs,130,
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,draftkings,h2h,Ottawa Senators,-150,
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,pinnacle,h2h,Toronto Maple Leafs,128,
+nhl-csv-tor-ott,icehockey_nhl,2026-10-20T23:00:00Z,Ottawa Senators,Toronto Maple Leafs,pinnacle,h2h,Ottawa Senators,-148,

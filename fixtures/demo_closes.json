@@ -1,0 +1,28 @@
+{
+  "closes": [
+    {
+      "event_id": "nhl-2026-1015-bos-tor",
+      "market": "ml",
+      "selection": "Toronto Maple Leafs",
+      "close_odds": 148
+    },
+    {
+      "event_id": "nhl-2026-1015-bos-tor",
+      "market": "total",
+      "selection": "Over",
+      "close_odds": 100
+    },
+    {
+      "event_id": "nba-2026-1018-nyk-tor",
+      "market": "spread",
+      "selection": "Toronto Raptors",
+      "close_odds": 100
+    },
+    {
+      "event_id": "nba-2026-1018-nyk-tor",
+      "market": "ml",
+      "selection": "Toronto Raptors",
+      "close_odds": 140
+    }
+  ]
+}
