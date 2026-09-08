@@ -1,4 +1,4 @@
-"""Ontario hybrid playbook: session stop, unit size, straights, one bet per event."""
+"""Ontario hybrid playbook: daily/seasonal stops, unit size, straights, one bet per event."""
 
 from __future__ import annotations
 
@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from sporty_hq.bankroll import season_start_et
 from sporty_hq.config import Settings
-from sporty_hq.models import Bet, normalize_market
+from sporty_hq.gates import evaluate_gates
+from sporty_hq.killswitch import load_status
+from sporty_hq.models import normalize_kind, normalize_market
 from sporty_hq.storage import Store
 
 
@@ -28,6 +31,28 @@ class SessionSnapshot:
     open_risk: float
     worst_case_pnl: float
     remaining_bets: int
+
+
+@dataclass(frozen=True)
+class SeasonalSnapshot:
+    start: datetime
+    bets_logged: int
+    realized_pnl: float
+    open_risk: float
+    worst_case_pnl: float
+
+
+@dataclass(frozen=True)
+class StopStatus:
+    daily_hit: bool
+    seasonal_hit: bool
+    daily: SessionSnapshot
+    seasonal: SeasonalSnapshot
+    reasons: tuple[str, ...]
+
+    @property
+    def hit(self) -> bool:
+        return self.daily_hit or self.seasonal_hit
 
 
 def session_start(now: datetime, timezone_name: str) -> datetime:
@@ -53,6 +78,63 @@ def session_snapshot(store: Store, settings: Settings, now: datetime) -> Session
     )
 
 
+def seasonal_snapshot(store: Store, settings: Settings, now: datetime) -> SeasonalSnapshot:
+    start = season_start_et(now, settings.timezone, settings.season_start)
+    pool = store.bets_logged_since(start)
+    realized = sum(b.pnl or 0.0 for b in pool if b.pnl is not None)
+    open_bets = [b for b in pool if b.is_open]
+    open_risk = sum(b.stake for b in open_bets)
+    return SeasonalSnapshot(
+        start=start,
+        bets_logged=len(pool),
+        realized_pnl=round(realized, 2),
+        open_risk=round(open_risk, 2),
+        worst_case_pnl=round(realized - open_risk, 2),
+    )
+
+
+def stop_status(store: Store, settings: Settings, now: datetime) -> StopStatus:
+    """Stops are hit on *realized* P&L. Open risk is shown but does not stop the scan."""
+    daily = session_snapshot(store, settings, now)
+    seasonal = seasonal_snapshot(store, settings, now)
+    daily_hit = daily.realized_pnl <= settings.daily_stop
+    seasonal_hit = seasonal.realized_pnl <= settings.seasonal_stop
+    reasons: list[str] = []
+    if daily_hit:
+        reasons.append(
+            f"daily stop {settings.daily_stop:.0f} hit "
+            f"(realized ${daily.realized_pnl:+.2f})"
+        )
+    if seasonal_hit:
+        reasons.append(
+            f"seasonal stop {settings.seasonal_stop:.0f} hit "
+            f"(realized ${seasonal.realized_pnl:+.2f})"
+        )
+    return StopStatus(
+        daily_hit=daily_hit,
+        seasonal_hit=seasonal_hit,
+        daily=daily,
+        seasonal=seasonal,
+        reasons=tuple(reasons),
+    )
+
+
+def format_stop_block(status: StopStatus, settings: Settings) -> str:
+    lines = [
+        f"Daily: realized ${status.daily.realized_pnl:+.2f} / stop {settings.daily_stop:.0f} "
+        f"({status.daily.bets_logged} bets, worst-case ${status.daily.worst_case_pnl:+.2f})",
+        f"Season: realized ${status.seasonal.realized_pnl:+.2f} / stop {settings.seasonal_stop:.0f} "
+        f"({status.seasonal.bets_logged} bets since {status.seasonal.start.date()})",
+    ]
+    if status.hit:
+        lines.append(
+            "Money stop hit — new LIVE bets refused. Paper logging still allowed. "
+            "HQ does not place bets."
+        )
+        lines.extend(f"- {r}" for r in status.reasons)
+    return "\n".join(lines)
+
+
 def validate_new_bet(
     store: Store,
     settings: Settings,
@@ -62,12 +144,23 @@ def validate_new_bet(
     stake: float,
     now: datetime,
     force: bool = False,
+    kind: str = "paper",
 ) -> SessionSnapshot:
-    """Raise PlaybookViolation for hard rules. Session caps are hard unless force=True."""
+    """Raise PlaybookViolation for hard rules.
+
+    Kill switch pause refuses every new ticket. Live tickets need both
+    validation gates (historical backtest + ~2–3 week paper confirm).
+    Daily/seasonal money stops apply to live only.
+    """
     try:
+        kind = normalize_kind(kind)
         normalize_market(market)
     except ValueError as exc:
         raise PlaybookViolation(str(exc), "straights_only") from exc
+
+    desk = load_status(settings.data_dir)
+    if desk.paused:
+        raise PlaybookViolation(desk.pause_message(), "kill_switch")
 
     if store.open_bets_for_event(event_id):
         raise PlaybookViolation(
@@ -76,24 +169,52 @@ def validate_new_bet(
         )
 
     snap = session_snapshot(store, settings, now)
+    seasonal = seasonal_snapshot(store, settings, now)
+
+    if kind == "live":
+        gates = evaluate_gates(store, settings, now, season_start=seasonal.start)
+        if not gates.live_unlocked:
+            raise PlaybookViolation(
+                "Playbook: paper-only protocol. Live tickets stay locked. "
+                "Gate 1 is cheap-feed CLV (Odds API / SportsGameOdds). "
+                f"Backtest: {gates.backtest.detail} Paper: {gates.paper_confirm.detail} "
+                "Kill switch is unchanged.",
+                "live_locked",
+            )
+        if snap.realized_pnl <= settings.daily_stop:
+            raise PlaybookViolation(
+                f"Playbook: daily stop {settings.daily_stop:.0f} hit "
+                f"(realized ${snap.realized_pnl:+.2f}). New live bets refused.",
+                "daily_stop",
+            )
+        if seasonal.realized_pnl <= settings.seasonal_stop:
+            raise PlaybookViolation(
+                f"Playbook: seasonal stop {settings.seasonal_stop:.0f} hit "
+                f"(realized ${seasonal.realized_pnl:+.2f}). New live bets refused.",
+                "seasonal_stop",
+            )
+        worst_if_logged = snap.worst_case_pnl - stake
+        if worst_if_logged < settings.daily_stop:
+            raise PlaybookViolation(
+                f"Playbook: daily stop {settings.daily_stop:.0f} would be breached "
+                f"(worst-case P&L {worst_if_logged:.2f} including this ${stake:.0f} unit). "
+                "New live bets refused.",
+                "daily_stop",
+            )
+        seasonal_worst_if = seasonal.worst_case_pnl - stake
+        if seasonal_worst_if < settings.seasonal_stop:
+            raise PlaybookViolation(
+                f"Playbook: seasonal stop {settings.seasonal_stop:.0f} would be breached "
+                f"(worst-case P&L {seasonal_worst_if:.2f} including this ${stake:.0f} unit). "
+                "New live bets refused.",
+                "seasonal_stop",
+            )
+
     if not force and snap.bets_logged >= settings.max_bets_per_session:
         raise PlaybookViolation(
             f"Playbook: ~{settings.max_bets_per_session} bets/session already logged today "
             f"({snap.bets_logged}). Use --force to override.",
             "session_cap",
         )
-
-    worst_if_logged = snap.worst_case_pnl - stake
-    if not force and worst_if_logged <= settings.session_stop:
-        raise PlaybookViolation(
-            f"Playbook: session stop {settings.session_stop:.0f} would be reached "
-            f"(worst-case P&L {worst_if_logged:.2f} including this ${stake:.0f} unit). "
-            "Use --force to override.",
-            "session_stop",
-        )
-
-    if abs(stake - settings.unit_stake) > 1e-9:
-        # Flat $25 units: allow with a note from the CLI, not a hard fail.
-        pass
 
     return snap

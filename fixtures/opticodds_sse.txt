@@ -1,0 +1,12 @@
+event: connected
+retry: 5000
+data: ok go
+
+event: ping
+retry: 5000
+data: 2026-09-08T18:00:00Z
+
+event: odds
+id: 1730079534820-2
+retry: 5000
+data: {"data":[{"id":"demo-fd","fixture_id":"mlb-2026-0908-nyy-bos","game_id":"mlb-2026-0908-nyy-bos","sport":"baseball","league":"MLB","sportsbook":"FanDuel","market":"Moneyline","name":"New York Yankees","selection":"New York Yankees","is_main":true,"is_live":false,"price":165,"points":null,"timestamp":1788937800.0,"home_team":"Boston Red Sox","away_team":"New York Yankees"},{"id":"demo-fd-bos","fixture_id":"mlb-2026-0908-nyy-bos","sport":"baseball","league":"MLB","sportsbook":"FanDuel","market":"Moneyline","name":"Boston Red Sox","selection":"Boston Red Sox","is_main":true,"price":-190,"home_team":"Boston Red Sox","away_team":"New York Yankees","timestamp":1788937800.0},{"id":"demo-pin","fixture_id":"mlb-2026-0908-nyy-bos","sport":"baseball","league":"MLB","sportsbook":"Pinnacle","market":"Moneyline","name":"New York Yankees","selection":"New York Yankees","is_main":true,"price":138,"home_team":"Boston Red Sox","away_team":"New York Yankees","timestamp":1788937800.0},{"id":"demo-pin-bos","fixture_id":"mlb-2026-0908-nyy-bos","sport":"baseball","league":"MLB","sportsbook":"Pinnacle","market":"Moneyline","name":"Boston Red Sox","selection":"Boston Red Sox","is_main":true,"price":-158,"home_team":"Boston Red Sox","away_team":"New York Yankees","timestamp":1788937800.0}],"entry_id":"1730079534820-2","type":"odds"}

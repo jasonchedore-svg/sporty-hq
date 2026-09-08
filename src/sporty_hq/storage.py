@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from sporty_hq.models import Bet, Candidate, Quote
+from sporty_hq.models import Bet, Candidate, Lesson, Quote
 
 
 SCHEMA = """
@@ -80,11 +80,41 @@ CREATE TABLE IF NOT EXISTS bets (
     clv_pct REAL,
     pnl REAL,
     edge_note TEXT NOT NULL DEFAULT '',
-    settled_at TEXT
+    settled_at TEXT,
+    postmortem TEXT,
+    lesson TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'paper'
 );
 
 CREATE INDEX IF NOT EXISTS idx_bets_event ON bets(event_id);
 CREATE INDEX IF NOT EXISTS idx_bets_logged ON bets(logged_at);
+
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    bet_id TEXT,
+    sport TEXT NOT NULL DEFAULT '',
+    event_id TEXT NOT NULL DEFAULT '',
+    event_name TEXT NOT NULL DEFAULT '',
+    market TEXT NOT NULL DEFAULT '',
+    selection TEXT NOT NULL DEFAULT '',
+    teams TEXT NOT NULL DEFAULT '[]',
+    postmortem TEXT NOT NULL,
+    lesson TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (bet_id) REFERENCES bets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_sport ON lessons(sport);
+CREATE INDEX IF NOT EXISTS idx_lessons_market ON lessons(market);
+
+CREATE TABLE IF NOT EXISTS desk_events (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    trip TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    review_path TEXT
+);
 
 CREATE TABLE IF NOT EXISTS alerts_sent (
     id INTEGER PRIMARY KEY,
@@ -254,8 +284,8 @@ class Store:
                 INSERT INTO bets (
                     id, logged_at, event_id, event_name, sport, commence_at, market,
                     selection, point, odds_at_bet, stake, result, close_odds, clv_pct,
-                    pnl, edge_note, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pnl, edge_note, settled_at, postmortem, lesson, kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bet.id,
@@ -275,6 +305,9 @@ class Store:
                     bet.pnl,
                     bet.edge_note,
                     bet.settled_at.isoformat() if bet.settled_at else None,
+                    bet.postmortem,
+                    bet.lesson,
+                    bet.kind or "paper",
                 ),
             )
 
@@ -282,7 +315,8 @@ class Store:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE bets SET result=?, close_odds=?, clv_pct=?, pnl=?, edge_note=?, settled_at=?
+                UPDATE bets SET result=?, close_odds=?, clv_pct=?, pnl=?, edge_note=?,
+                    settled_at=?, postmortem=?, lesson=?, kind=?
                 WHERE id=?
                 """,
                 (
@@ -292,6 +326,9 @@ class Store:
                     bet.pnl,
                     bet.edge_note,
                     bet.settled_at.isoformat() if bet.settled_at else None,
+                    bet.postmortem,
+                    bet.lesson,
+                    bet.kind or "paper",
                     bet.id,
                 ),
             )
@@ -329,6 +366,64 @@ class Store:
             ).fetchall()
         return [_bet_from_row(row) for row in rows]
 
+    def insert_lesson(self, lesson: Lesson) -> Lesson:
+        created = lesson.created_at or utcnow()
+        lesson.created_at = created
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO lessons (
+                    created_at, bet_id, sport, event_id, event_name, market,
+                    selection, teams, postmortem, lesson
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created.isoformat(),
+                    lesson.bet_id,
+                    lesson.sport,
+                    lesson.event_id,
+                    lesson.event_name,
+                    lesson.market,
+                    lesson.selection,
+                    json.dumps(lesson.teams),
+                    lesson.postmortem,
+                    lesson.lesson,
+                ),
+            )
+            lesson.id = int(cur.lastrowid)
+        return lesson
+
+    def list_lessons(self) -> list[Lesson]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM lessons ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        return [_lesson_from_row(row) for row in rows]
+
+    def record_desk_event(
+        self,
+        *,
+        kind: str,
+        trip: str | None,
+        detail: str,
+        review_path: str | None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO desk_events (created_at, kind, trip, detail, review_path)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (utcnow().isoformat(), kind, trip, detail, review_path),
+            )
+
+    def list_desk_events(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM desk_events ORDER BY created_at ASC, id ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def claim_alert(self, dedup_key: str, alert_type: str, payload: dict[str, Any]) -> bool:
         """Return True if this key is new (alert should send)."""
         try:
@@ -362,6 +457,13 @@ def _migrate_bets(conn: sqlite3.Connection) -> None:
     names = {r[1] for r in conn.execute("PRAGMA table_info(bets)").fetchall()}
     if "notes" in names and "edge_note" not in names:
         conn.execute("ALTER TABLE bets RENAME COLUMN notes TO edge_note")
+        names = {r[1] for r in conn.execute("PRAGMA table_info(bets)").fetchall()}
+    if "postmortem" not in names:
+        conn.execute("ALTER TABLE bets ADD COLUMN postmortem TEXT")
+    if "lesson" not in names:
+        conn.execute("ALTER TABLE bets ADD COLUMN lesson TEXT NOT NULL DEFAULT ''")
+    if "kind" not in names:
+        conn.execute("ALTER TABLE bets ADD COLUMN kind TEXT NOT NULL DEFAULT 'paper'")
 
 
 def _quote_from_row(row: sqlite3.Row) -> Quote:
@@ -428,4 +530,37 @@ def _bet_from_row(row: sqlite3.Row) -> Bet:
         pnl=float(row["pnl"]) if row["pnl"] is not None else None,
         edge_note=_row_edge_note(row),
         settled_at=parse_dt(row["settled_at"]),
+        postmortem=_row_optional_str(row, "postmortem"),
+        lesson=_row_optional_str(row, "lesson") or "",
+        kind=_row_optional_str(row, "kind") or "paper",
+    )
+
+
+def _row_optional_str(row: sqlite3.Row, key: str) -> str | None:
+    if key not in row.keys():
+        return None
+    value = row[key]
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
+def _lesson_from_row(row: sqlite3.Row) -> Lesson:
+    teams_raw = row["teams"] if "teams" in row.keys() else "[]"
+    try:
+        teams = json.loads(teams_raw) if teams_raw else []
+    except json.JSONDecodeError:
+        teams = []
+    return Lesson(
+        id=int(row["id"]),
+        created_at=parse_dt(row["created_at"]),
+        bet_id=row["bet_id"],
+        sport=row["sport"] or "",
+        event_id=row["event_id"] or "",
+        event_name=row["event_name"] or "",
+        market=row["market"] or "",
+        selection=row["selection"] or "",
+        teams=list(teams),
+        postmortem=row["postmortem"],
+        lesson=row["lesson"] or "",
     )

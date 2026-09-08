@@ -10,6 +10,12 @@ from typing import Any
 
 STRAIGHT_MARKETS = frozenset({"ml", "h2h", "spread", "spreads", "total", "totals"})
 
+POSTMORTEM_TAGS = frozenset(
+    {"injury_missed", "weather_ignored", "steam_missed", "other"}
+)
+SHARP_BOOK_DEFAULT = "pinnacle"
+TICKET_KINDS = frozenset({"paper", "live"})
+
 MARKET_ALIASES = {
     "ml": "ml",
     "h2h": "ml",
@@ -37,6 +43,7 @@ class AlertType(str, Enum):
     PRE_GAME_REMINDER = "pre_game_reminder"
     SETTLE_REMINDER = "settle_reminder"
     TEST = "test"
+    KILL_SWITCH = "kill_switch"
 
 
 def normalize_market(market: str) -> str:
@@ -55,6 +62,22 @@ def display_market(market: str) -> str:
 
 def normalize_book(book: str) -> str:
     return book.strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
+def normalize_postmortem(tag: str) -> str:
+    key = tag.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in POSTMORTEM_TAGS:
+        raise ValueError(
+            f"Postmortem '{tag}' is not one of: {', '.join(sorted(POSTMORTEM_TAGS))}"
+        )
+    return key
+
+
+def normalize_kind(kind: str) -> str:
+    key = (kind or "paper").strip().lower()
+    if key not in TICKET_KINDS:
+        raise ValueError(f"Ticket kind '{kind}' is not paper or live")
+    return key
 
 
 @dataclass(frozen=True)
@@ -99,6 +122,10 @@ class Candidate:
     rationale: str
     point: float | None = None
     consensus_books: list[str] = field(default_factory=list)
+    pinnacle_odds: int | None = None
+    pinnacle_fair: float | None = None
+    suggested_stake: float | None = None
+    lesson_hits: list[str] = field(default_factory=list)
     id: int | None = None
     scanned_at: datetime | None = None
 
@@ -128,6 +155,9 @@ class Bet:
     edge_note: str = ""
     settled_at: datetime | None = None
     point: float | None = None
+    postmortem: str | None = None
+    lesson: str = ""
+    kind: str = "paper"
 
     @property
     def is_open(self) -> bool:
@@ -147,6 +177,28 @@ class Bet:
             value = getattr(self, key)
             row[key] = value.isoformat() if value else None
         row["pick"] = self.pick
+        return row
+
+
+@dataclass
+class Lesson:
+    """Persisted postmortem from a settled ticket. Surfaced on similar scans."""
+
+    sport: str
+    event_id: str
+    event_name: str
+    market: str
+    selection: str
+    postmortem: str
+    lesson: str
+    teams: list[str] = field(default_factory=list)
+    bet_id: str | None = None
+    created_at: datetime | None = None
+    id: int | None = None
+
+    def to_row(self) -> dict[str, Any]:
+        row = asdict(self)
+        row["created_at"] = self.created_at.isoformat() if self.created_at else None
         return row
 
 

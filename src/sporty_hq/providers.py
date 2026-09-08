@@ -159,7 +159,7 @@ class TheOddsApiProvider:
         self,
         api_key: str,
         sports: list[str] | None = None,
-        regions: str = "us,us2",
+        regions: str = "us,us2,eu",
         markets: str = "h2h,spreads,totals",
         timeout: float = 20.0,
     ) -> None:
@@ -173,6 +173,7 @@ class TheOddsApiProvider:
             "basketball_nba",
             "icehockey_nhl",
         ]
+        # Hypothesis: Pinnacle is on the Odds API EU region; us+us2+eu so sharp vs FD retail can land.
         self.regions = regions
         self.markets = markets
         self.timeout = timeout
@@ -195,6 +196,41 @@ class TheOddsApiProvider:
         return quotes
 
 
+class SportsGameOddsProvider:
+    """Payable live ingest. Requires SPORTSGAMEODDS_API_KEY; never logged."""
+
+    name = "sportsgameodds"
+    BASE = "https://api.sportsgameodds.com/v2"
+
+    def __init__(self, api_key: str, leagues: str = "NFL,NBA,MLB,NCAAF,NHL", timeout: float = 20.0) -> None:
+        if not api_key:
+            raise ValueError("SPORTSGAMEODDS_API_KEY is not set")
+        self._api_key = api_key
+        self.leagues = leagues
+        self.timeout = timeout
+
+    def fetch_quotes(self) -> list[Quote]:
+        from sporty_hq.cheap_history import quotes_from_sgo_payload
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(
+                f"{self.BASE}/events",
+                params={"leagueID": self.leagues, "oddsAvailable": "true", "limit": "40"},
+                headers={"x-api-key": self._api_key},
+            )
+            if response.status_code in {401, 403}:
+                raise ValueError(
+                    "SportsGameOdds rejected the key (401/403). HQ will not invent quotes."
+                )
+            response.raise_for_status()
+            quotes = quotes_from_sgo_payload(response.json(), source=self.name)
+        if not quotes:
+            raise ValueError(
+                "SportsGameOdds returned no mappable FanDuel/Pinnacle mains. HQ will not invent quotes."
+            )
+        return quotes
+
+
 def load_provider(kind: str, path: Path | None = None, api_key: str | None = None) -> OddsProvider:
     kind = kind.strip().lower()
     if kind in {"fixture", "json", "csv", "file"}:
@@ -203,7 +239,11 @@ def load_provider(kind: str, path: Path | None = None, api_key: str | None = Non
         return FixtureProvider(path)
     if kind in {"oddsapi", "theoddsapi", "the-odds-api"}:
         return TheOddsApiProvider(api_key=api_key or "")
-    raise ValueError(f"Unknown provider '{kind}' (use fixture or oddsapi)")
+    if kind in {"sportsgameodds", "sgo", "sports-game-odds"}:
+        return SportsGameOddsProvider(api_key=api_key or "")
+    raise ValueError(
+        f"Unknown provider '{kind}' (use fixture, oddsapi, or sportsgameodds)"
+    )
 
 
 def _optional_float(value: Any) -> float | None:

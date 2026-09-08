@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from sporty_hq.models import Candidate, Quote, display_market, normalize_book
+from sporty_hq.models import Candidate, Quote, SHARP_BOOK_DEFAULT, display_market, normalize_book
 from sporty_hq.odds_math import (
     american_to_decimal,
     edge,
@@ -20,19 +20,12 @@ from sporty_hq.sports import (
     soccer_is_liquid,
     sport_rank,
 )
-from sporty_hq.odds_math import (
-    american_to_decimal,
-    edge,
-    implied_prob,
-    juice_pct,
-    median,
-    multiplicative_devig,
-)
 
 
 @dataclass(frozen=True)
 class ScanConfig:
     target_book: str = "fanduel"
+    sharp_book: str = SHARP_BOOK_DEFAULT
     min_edge: float = 0.03
     home_prob_bump: float = 0.0  # model stub: add to home-team fair prob, then renormalize
     apply_calendar: bool = True
@@ -77,6 +70,9 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
     """Rank target-book selections with juice-removed edge vs consensus median.
 
     Consensus = median multiplicative de-vig probability across non-target books.
+    Pinnacle (or ``sharp_book``) is overlaid as the sharp benchmark vs FanDuel retail
+    when it posts a two-way. Hypothesis: Pinnacle de-vig is closer to true market
+    than a multi-book median; edge keepers still use consensus until that is A/B'd.
     Optional ``home_prob_bump`` is a placeholder model until a real one exists.
     """
     config = config or ScanConfig()
@@ -110,6 +106,11 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
         target_sides = sides_by_book[target]
         target_fair, target_juice = _fair_map(target_sides)
         sample = next(iter(target_sides.values()))
+        sharp = normalize_book(config.sharp_book)
+        sharp_sides = sides_by_book.get(sharp)
+        sharp_fair: dict[str, float] = {}
+        if sharp_sides:
+            sharp_fair, _sharp_juice = _fair_map(sharp_sides)
 
         for sel_key, tquote in target_sides.items():
             if sel_key not in consensus_fairs:
@@ -126,15 +127,20 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
             rationale = (
                 f"{tquote.book} {tquote.selection}{line} {tquote.american_odds:+d} vs consensus "
                 f"fair {fair_p:.1%} ({books_label}). Implied {implied:.1%} with "
-                f"{target_juice:.1f}% juice; juice-removed EV {ev:.1%}. "
-                f"Stub model home bump {config.home_prob_bump:+.0%}."
-                if config.home_prob_bump
-                else (
-                    f"{tquote.book} {tquote.selection}{line} {tquote.american_odds:+d} vs consensus "
-                    f"fair {fair_p:.1%} ({books_label}). Implied {implied:.1%} with "
-                    f"{target_juice:.1f}% juice; juice-removed EV {ev:.1%}."
-                )
+                f"{target_juice:.1f}% juice; juice-removed EV {ev:.1%}."
             )
+            if config.home_prob_bump:
+                rationale += f" Stub model home bump {config.home_prob_bump:+.0%}."
+            pin_odds = None
+            pin_fair = None
+            if sharp_sides and sel_key in sharp_sides:
+                pin_odds = sharp_sides[sel_key].american_odds
+                pin_fair = sharp_fair.get(sel_key)
+                pin_fair_txt = f"{pin_fair:.1%}" if pin_fair is not None else "—"
+                rationale += (
+                    f" Sharp benchmark {sharp} {pin_odds:+d} (fair {pin_fair_txt}) vs "
+                    f"{tquote.book} retail {tquote.american_odds:+d}."
+                )
             candidates.append(
                 Candidate(
                     event_id=sample.event_id,
@@ -153,6 +159,8 @@ def score_quotes(quotes: list[Quote], config: ScanConfig | None = None) -> list[
                     juice_pct=round(target_juice, 2),
                     rationale=rationale,
                     consensus_books=sorted(consensus_books),
+                    pinnacle_odds=pin_odds,
+                    pinnacle_fair=round(pin_fair, 6) if pin_fair is not None else None,
                 )
             )
 

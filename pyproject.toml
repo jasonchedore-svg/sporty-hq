@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sporty-hq"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid FanDuel research + alerts HQ (Ontario). No auto-betting."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,7 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.7",
     "httpx>=0.27",
+    "websockets>=13.0",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",

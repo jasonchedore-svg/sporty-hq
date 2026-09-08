@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/desk_status.schema.json",
+  "title": "Sporty HQ owner kill switch",
+  "description": "Auto-pause the desk. Resume only with a written review artifact. No silent override.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status"],
+  "properties": {
+    "status": { "type": "string", "enum": ["running", "paused"] },
+    "trip": {
+      "type": ["string", "null"],
+      "enum": ["acted_before_gate", "paper_clv_negative", null]
+    },
+    "tripped_at": { "type": ["string", "null"] },
+    "detail": { "type": "string" },
+    "review_path": { "type": ["string", "null"] },
+    "review_recorded_at": { "type": ["string", "null"] }
+  }
+}
