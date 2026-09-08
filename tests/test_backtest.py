@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,7 +83,7 @@ def test_backtest_clears_on_opticodds_fanduel_plus_pinnacle_true_close() -> None
     assert result.cleared is True
     assert result.sample is False
     ids = {a["id"] for a in result.assumptions}
-    assert {"clv_formula", "vig", "feed_parity", "close_definition", "lookback", "filters", "caveat"} <= ids
+    assert {"clv_formula", "vig", "feed_parity", "close_definition", "lookback", "filters", "archive_audit", "caveat"} <= ids
     assert "backtest ≠ will work again" in result.note or any(
         "will work again" in a["statement"] for a in result.assumptions
     )
@@ -100,6 +101,10 @@ def test_last_seen_close_fails_audit_and_cannot_clear() -> None:
     result = run_backtest(rows, seasons=1, min_n=30, source="/tmp/archive.csv", sample=False, audit=audit)
     assert result.cleared is False
     assert result.archive_audit_passed is False
+    assert result.avg_clv is None
+    assert result.n == 0
+    assert "STOPPED" in result.note
+    assert "vanity" in result.note.lower()
 
 
 def test_sample_fixture_cannot_clear_gate(data_dir: Path) -> None:
@@ -146,8 +151,11 @@ def test_archive_audit_on_sample_file(data_dir: Path) -> None:
         app,
         ["archive-audit", "--path", str(SAMPLE_CSV), "--seasons", "1", "--data-dir", str(data_dir)],
     )
-    assert r.exit_code in {0, 1}, r.output
-    assert "owner_status" in r.output
+    assert r.exit_code == 0, r.output
+    assert "PASSED" in r.output
+    assert "CLEARED" in r.output
+    assert (data_dir / "archive_audit.md").exists()
+    assert "STOP FOR HUMAN REVIEW" not in r.output
 
 
 def test_load_csv_feed_identity() -> None:
@@ -156,6 +164,70 @@ def test_load_csv_feed_identity() -> None:
     assert rows[0].posted_feed == "opticodds"
     assert rows[0].posted_book == "fanduel"
     assert rows[0].close_book == "pinnacle"
+
+
+def test_backtest_cli_stops_on_last_seen_without_vanity_clv(data_dir: Path) -> None:
+    junk = data_dir / "last_seen.csv"
+    junk.write_text(SAMPLE_CSV.read_text(encoding="utf-8").replace("true_close", "last_seen"), encoding="utf-8")
+    r = runner.invoke(
+        app,
+        ["backtest", "--path", str(junk), "--seasons", "1", "--data-dir", str(data_dir)],
+    )
+    assert r.exit_code == 1, r.output
+    assert "STOP FOR HUMAN REVIEW" in r.output
+    assert "STOPPED for human review" in r.output
+    assert "vanity" in r.output.lower()
+    assert "avg CLV=" not in r.output
+    stored = json.loads((data_dir / "backtest.json").read_text(encoding="utf-8"))
+    assert stored["avg_clv"] is None
+    assert stored["n"] == 0
+    assert stored["cleared"] is False
+    assert stored["archive_audit_passed"] is False
+    md = (data_dir / "archive_audit.md").read_text(encoding="utf-8")
+    assert "STOP FOR HUMAN REVIEW" in md
+    assert "last_seen" in md
+
+
+def test_failed_audit_overwrites_prior_cleared_backtest(data_dir: Path, settings, store) -> None:
+    good = run_backtest(
+        _covered_season(),
+        seasons=1,
+        min_n=30,
+        source="/tmp/opticodds-archive.csv",
+        sample=False,
+    )
+    assert good.cleared is True
+    save_result(data_dir, good)
+    from sporty_hq.storage import utcnow
+
+    assert evaluate_gates(store, settings, utcnow()).backtest.cleared is True
+
+    junk = data_dir / "thin.csv"
+    junk.write_text(SAMPLE_CSV.read_text(encoding="utf-8").replace("true_close", "last_seen"), encoding="utf-8")
+    r = runner.invoke(
+        app,
+        ["backtest", "--path", str(junk), "--seasons", "1", "--data-dir", str(data_dir)],
+    )
+    assert r.exit_code == 1, r.output
+    gates = evaluate_gates(store, settings, utcnow())
+    assert gates.backtest.cleared is False
+    assert gates.live_unlocked is False
+    stored = json.loads((data_dir / "backtest.json").read_text(encoding="utf-8"))
+    assert stored["avg_clv"] is None
+
+
+def test_archive_audit_cli_stops_on_thin_coverage(data_dir: Path) -> None:
+    thin = data_dir / "thin.csv"
+    header = SAMPLE_CSV.read_text(encoding="utf-8").splitlines()[0]
+    body = SAMPLE_CSV.read_text(encoding="utf-8").splitlines()[1]
+    thin.write_text(header + "\n" + body + "\n", encoding="utf-8")
+    r = runner.invoke(
+        app,
+        ["archive-audit", "--path", str(thin), "--seasons", "1", "--data-dir", str(data_dir)],
+    )
+    assert r.exit_code == 1, r.output
+    assert "STOP FOR HUMAN REVIEW" in r.output
+    assert "Coverage" in r.output
 
 
 def test_saved_sample_result_does_not_unlock_live(data_dir: Path, settings, store) -> None:

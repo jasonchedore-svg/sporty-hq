@@ -1,5 +1,6 @@
 """Validation gates for live unlock. Does not weaken the owner kill switch.
 
+0) OpticOdds archive audit (hard stop: coverage, timestamps, true close vs last-seen).
 1) Historical backtest vs prior-season closes (1–3 seasons) — beat the close.
 2) Current-season paper for ~2–3 weeks (not a full 17-week slate).
 3) Live only after both. Kill switch still trips on (A) flagged pre-gate action

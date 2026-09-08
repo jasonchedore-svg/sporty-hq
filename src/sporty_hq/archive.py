@@ -1,8 +1,9 @@
-"""OpticOdds historical archive audit — required before a backtest can clear.
+"""OpticOdds historical archive audit — hard prerequisite before any backtest.
 
-Owner (2026-09-08): the OpticOdds archive audit is CLEARED. Automated file
-checks still run on every `sporty backtest` so a later last-seen dump cannot
-silently count as a close.
+Owner (2026-09-08): the OpticOdds archive audit is CLEARED. That standing flag
+does not skip per-file checks. Every `sporty backtest` must pass this audit
+first. Thin coverage, junk timestamps, or last-seen quotes: emit a report and
+**stop** — do not score a vanity CLV that looks cleaner than the archive.
 
 Checks:
 - coverage gaps (seasons / sport families / straight markets)
@@ -98,7 +99,57 @@ def save_audit(data_dir: Path, audit: ArchiveAudit) -> Path:
     path = audit_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(audit.to_json_dict(), indent=2) + "\n", encoding="utf-8")
+    md_path = Path(data_dir) / "archive_audit.md"
+    md_path.write_text(render_audit_markdown(audit), encoding="utf-8")
     return path
+
+
+def render_audit_markdown(audit: ArchiveAudit) -> str:
+    """Human-review report. Failed audits must not be followed by a vanity CLV print."""
+    status = "PASSED" if audit.passed else "FAILED — STOP FOR HUMAN REVIEW"
+    lines = [
+        "# OpticOdds historical archive audit",
+        "",
+        f"**{status}**",
+        "",
+        f"- Owner standing flag: **{audit.owner_status}** ({OWNER_ARCHIVE_CLEARED_AT})",
+        f"- Rows in lookback: **{audit.n_rows}** (included {audit.n_included}, excluded {audit.n_excluded})",
+        f"- Seasons: **{', '.join(audit.seasons) or '—'}**",
+        f"- As of: {audit.as_of or '—'}",
+        "",
+        audit.detail,
+        "",
+        "## Coverage gaps (events / markets / seasons)",
+        "",
+    ]
+    coverage = audit.coverage_gaps + audit.undocumented_gaps
+    if coverage:
+        lines.extend(f"- {item}" for item in coverage)
+    else:
+        lines.append("- None flagged.")
+    lines.extend(["", "## Timestamps (stale or missing)", ""])
+    if audit.timestamp_issues:
+        lines.extend(f"- {item}" for item in audit.timestamp_issues)
+    else:
+        lines.append("- None flagged.")
+    lines.extend(["", "## Close quality (true close vs last-seen)", ""])
+    if audit.close_quality_issues:
+        lines.extend(f"- {item}" for item in audit.close_quality_issues)
+    else:
+        lines.append("- None flagged.")
+    if not audit.passed:
+        lines.extend(
+            [
+                "",
+                "## Stop",
+                "",
+                "Do **not** run a vanity backtest on this file. Coverage is thin, timestamps "
+                "are junk, and/or closes are last-seen quotes. Fix the archive or document "
+                "gaps in a `--gaps` JSON (reason ≥20 chars), then re-run `sporty archive-audit`.",
+                "",
+            ]
+        )
+    return "\n".join(lines) + "\n"
 
 
 def load_audit(data_dir: Path) -> ArchiveAudit | None:

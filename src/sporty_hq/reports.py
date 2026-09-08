@@ -180,6 +180,7 @@ def _kill_switch_md(desk: Any, paper: ClvSummary, judge_n: int, gates: Any = Non
         "",
         f"- Desk: **{status}**",
         f"- Trip: **{trip or '—'}**",
+        "- Gate 0 OpticOdds archive audit: **hard stop** before backtest (gaps / timestamps / true close vs last-seen; no vanity CLV)",
         "- Gate 1 backtest (prior 1–3 seasons vs close): **" + bt + "**",
         "- Caveat: **backtest ≠ will work again** — gate 2 still required",
         "- Gate 2 paper confirm (current season ~2–3 weeks, not a full 17; avg CLV must stay > 0): **" + pc + "**",

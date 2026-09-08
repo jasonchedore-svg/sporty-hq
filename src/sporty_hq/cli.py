@@ -26,6 +26,7 @@ from sporty_hq.archive import (
     OWNER_ARCHIVE_STATUS,
     audit_archive,
     load_documented_gaps,
+    render_audit_markdown,
     save_audit,
 )
 from sporty_hq.backtest import load_historical_closes, run_backtest, save_result
@@ -596,8 +597,9 @@ def archive_audit_cmd(
     documented = load_documented_gaps(gaps)
     audit = audit_archive(rows, seasons_requested=seasons, documented_gaps=documented)
     out = save_audit(settings.data_dir, audit)
-    console.print_json(data=audit.to_json_dict())
-    console.print(f"Wrote {out}")
+    md = render_audit_markdown(audit)
+    console.print(md)
+    console.print(f"Wrote {out} and {settings.data_dir / 'archive_audit.md'}")
     if not audit.passed:
         raise typer.Exit(1)
 
@@ -620,7 +622,7 @@ def backtest(
     ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Gate 1: historical CLV vs closes on the OpticOdds+Pinnacle path. No bets."""
+    """Gate 1: historical CLV vs closes. Archive audit is a hard stop first. No bets."""
     settings = _settings(data_dir)
     store = _store(settings)
     kind = source.strip().lower()
@@ -663,6 +665,21 @@ def backtest(
         documented_gaps=documented,
     )
     out = save_result(settings.data_dir, result)
+    if not audit.passed:
+        md = render_audit_markdown(audit)
+        console.print(md)
+        console.print(
+            "[red]STOPPED for human review.[/red] Archive audit failed "
+            "(coverage / timestamps / true-close). No vanity CLV will be scored. "
+            f"See {settings.data_dir / 'archive_audit.md'}"
+        )
+        store.record_desk_event(
+            kind="archive_audit",
+            trip=None,
+            detail=audit.detail,
+            review_path=str(settings.data_dir / "archive_audit.md"),
+        )
+        raise typer.Exit(1)
     store.record_desk_event(
         kind="backtest",
         trip=None,

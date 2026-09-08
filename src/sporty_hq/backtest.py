@@ -196,9 +196,10 @@ def assumption_log(*, seasons: int, min_n: int, sample: bool) -> list[dict[str, 
         {
             "id": "archive_audit",
             "statement": (
-                "Owner flagged the OpticOdds archive audit CLEARED on 2026-09-08. "
-                "Each backtest still re-runs file checks (coverage, timestamps, true close). "
-                "A failed file audit means this result is not valid."
+                "Hard prerequisite before scoring. Each backtest re-runs file checks "
+                "(coverage gaps, stale/missing timestamps, true_close vs last_seen). "
+                "Failed audit: no CLV is scored (no vanity backtest). Owner standing "
+                "flag CLEARED 2026-09-08 does not skip per-file checks."
             ),
         },
         {
@@ -309,6 +310,39 @@ def run_backtest(
     if audit is None:
         audit = audit_archive(
             selected, seasons_requested=seasons, documented_gaps=documented_gaps
+        )
+    if not audit.passed:
+        # Do not score CLV on a junk/thin archive — that would look cleaner than reality.
+        return BacktestResult(
+            cleared=False,
+            health=ModelHealth.INSUFFICIENT_SAMPLE.value,
+            avg_clv=None,
+            n=0,
+            seasons=chosen,
+            min_n=min_n,
+            source=source,
+            as_of=utcnow().isoformat(),
+            note=(
+                "STOPPED: archive audit failed — no vanity CLV. Human review required. "
+                + audit.detail
+            ),
+            per_season={},
+            feed_parity=False,
+            feed_id="",
+            feed_detail="Not evaluated — archive audit must pass first.",
+            live_feed_id=LIVE_FEED_ID,
+            archive_audit_passed=False,
+            archive_audit_detail=audit.detail,
+            sample=sample,
+            assumptions=assumption_log(seasons=seasons, min_n=min_n, sample=sample),
+            data_sources=data_source_log(
+                source=source,
+                sample=sample,
+                parity=evaluate_feed_parity([]),
+                audit=audit,
+                n_loaded=len(selected),
+                n_scored=0,
+            ),
         )
     scored = included_rows(selected, audit)
     parity: FeedParity = evaluate_feed_parity(

@@ -12,7 +12,9 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
 
 **Locked feed:** OpticOdds realtime first (WebSocket attempt → SSE fallback) with Pinnacle as sharp overlay. Odds API is not on the live path.
 
-**Feed parity (non-negotiable):** Gate 1 historical backtest **must use this same path** — OpticOdds realtime posted/take (FanDuel) **plus** Pinnacle as the sharp close/benchmark. Do **not** backtest on Pinnacle closing lines alone (or any other retail-only dump) and then go live on OpticOdds. That edge may not exist in production. `sporty backtest` refuses to clear if `posted_feed`/`posted_book` are Pinnacle, Odds API, unlabeled, or otherwise mismatched. Kill switch and CLV-first order are unchanged.
+**Feed parity (non-negotiable):** Gate 1 historical backtest **must use this same path** — OpticOdds realtime posted/take (FanDuel) **plus** Pinnacle as the sharp close/benchmark. Do **not** backtest on Pinnacle closing lines alone (or any other retail-only dump) and then go live on OpticOdds. That edge may not exist in production. `sporty backtest` refuses to clear if `posted_feed`/`posted_book` are Pinnacle, Odds API, unlabeled, or otherwise mismatched.
+
+**Archive audit (hard prerequisite):** Before any historical backtest, `sporty backtest` runs an OpticOdds archive audit (coverage gaps, stale/missing timestamps, true close vs last-seen). If coverage is thin or timestamps are junk, HQ emits `data/archive_audit.md` and **stops for human review** — it will not score a vanity CLV that looks cleaner than the file. Kill switch and CLV-first order are unchanged.
 
 ```
  OpticOdds realtime (WS first → SSE)  +  Pinnacle sharp on the same stream
@@ -29,6 +31,10 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
             └─ daily −$100 / seasonal −$500 stops (live); kill switch armed
             │  human-source / lessons HOLD until feed+dashboard logging
             ▼
+     gate 0 OpticOdds archive audit (HARD STOP if thin/junk)
+            → coverage gaps · stale/missing timestamps · true close vs last-seen
+            → fail: markdown report, no CLV scored, human review
+            ▼
      gate 1 historical backtest (caveat: ≠ will work again)
             → gate 2 paper ~2–3 weeks, avg CLV must stay > 0
             → live only then
@@ -36,6 +42,7 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
 
 | Layer | What it does | What it does not |
 |---|---|---|
+| **Archive audit** | Gate 0 hard stop: events/markets/seasons, timestamps, `true_close` vs last-seen | Vanity CLV on a thin or last-seen dump |
 | **Feed parity** | Backtest and live share `opticodds+pinnacle` (FanDuel take on OpticOdds, Pinnacle close) | Pinnacle-only history, Odds API history, or a different retail feed as the take |
 | **Sharp** | Pinnacle as benchmark vs FanDuel retail when the book is on the board | Treat Pinnacle as a bettable Ontario book |
 | **Scan** | ≥3% juice-removed EV vs consensus; Pinnacle overlay; lessons from prior settles | Place tickets. Replace CLV as the scoreboard. |
@@ -116,19 +123,32 @@ See `schemas/session.schema.json`. Runtime file: `data/session.json` (gitignored
 
 Build order does not change: **CLV dashboard first** → **OpticOdds realtime + Pinnacle sharp** → hold human-source/tipster lessons until feed+dashboard are logging. Scan is not the scoreboard. Kill switch is unchanged (A: acted before gates; B: paper avg CLV ≤ 0 at n≥100).
 
-1. **Gate 1 — historical backtest** vs prior season(s) closing lines (1–3 seasons). Same CLV math as the dashboard. **Same feed as live:** OpticOdds realtime posted (FanDuel) + Pinnacle sharp close — not Pinnacle-only history. Must beat the close (`avg CLV > 0`). **Caveat: backtest ≠ will work again.**
+0. **Gate 0 — OpticOdds archive audit (hard stop).** Gaps in events/markets/seasons, stale or missing timestamps, and whether close prices are true closes vs last-seen quotes. If coverage is thin or timestamps are junk: emit `sporty archive-audit` / `data/archive_audit.md` and **stop for human review**. Do **not** run a vanity backtest that looks cleaner than reality. Standing owner flag CLEARED 2026-09-08 does **not** skip the per-file check.
+1. **Gate 1 — historical backtest** vs prior season(s) closing lines (1–3 seasons). Same CLV math as the dashboard. **Same feed as live:** OpticOdds realtime posted (FanDuel) + Pinnacle sharp close — not Pinnacle-only history. Must beat the close (`avg CLV > 0`). **Caveat: backtest ≠ will work again.** Runs only after gate 0 passes.
 2. **Gate 2 — paper the current season ~2–3 weeks** (default 21 days; not a full 17-week NFL slate). Avg CLV must **stay positive** or this gate (and live) un-clears.
 3. **Live only after both gates**, and only while paper avg CLV stays positive. `log-bet --live` before that trips kill switch A.
 
 ---
 
+## Archive audit (gate 0 — hard stop)
+
+Required **before** any historical backtest. `sporty archive-audit --path FILE` and `sporty backtest --path FILE` both run the same checks:
+
+| Check | Fail means |
+|---|---|
+| Coverage | Gaps in events / markets (`ml`, `spread`, `total`) / requested seasons |
+| Timestamps | Missing or stale `posted_at` / `close_at` / `commence_at` |
+| Close quality | `close_kind` is last-seen / unlabeled, not `true_close` |
+
+Failed audit → markdown report (`data/archive_audit.md`), exit 1, **no CLV scored**. Document known holes with `--gaps` (reason ≥20 chars) or row `excluded` + `exclude_reason`. `--owner-cleared` prints the 2026-09-08 standing flag only; it is not a skip and not a CLV number.
+
 ## Historical backtest (gate 1)
 
-Feed parity is **non-negotiable**: the archive must be the live path (`posted_feed=opticodds`, `posted_book=fanduel`, `close_book=pinnacle`). Backtesting Pinnacle closes alone (or a different retail feed) and then going live on OpticOdds is forbidden — that edge may not exist in production. Gate 1 will not clear on that file.
+Feed parity is **non-negotiable**: the archive must be the live path (`posted_feed=opticodds`, `posted_book=fanduel`, `close_book=pinnacle`). Backtesting Pinnacle closes alone (or a different retail feed) and then going live on OpticOdds is forbidden — that edge may not exist in production. Gate 1 will not clear on that file. Archive audit must pass first.
 
 CLV dashboard + paper `log-bet` are the scoreboard. **No live tickets** until this backtest (non-sample) and a ~2–3 week paper confirm both clear. Kill switch stays armed.
 
-OpticOdds archive audit was **owner-CLEARED 2026-09-08**. File checks still run on every backtest (coverage, timestamps, true close vs last-seen). HQ **does not invent closes**. OpticOdds SSE is realtime only — there is no historical pull in this CLI.
+OpticOdds archive audit was **owner-CLEARED 2026-09-08**. That is a standing flag, not a skip. File checks still run on every backtest (coverage, timestamps, true close vs last-seen). A failed audit **stops the backtest** (exit 1, markdown report) and does not score CLV. HQ **does not invent closes**. OpticOdds SSE is realtime only — there is no historical pull in this CLI.
 
 End-to-end:
 
@@ -145,7 +165,8 @@ sporty archive-audit --path /path/to/opticodds-archive.csv --seasons 1
 # 3) Grade vs closes (same CLV math as the dashboard). Logs assumptions + data sources.
 sporty backtest --path /path/to/opticodds-archive.csv --seasons 1
 # optional: --gaps fixtures/opticodds_archive_gaps.example.json
-# writes data/backtest.json and data/archive_audit.json
+# always writes data/archive_audit.md + .json
+# failed audit: STOP FOR HUMAN REVIEW, avg_clv=null stub in backtest.json, no vanity score
 # exit 0 only if avg CLV > 0, n ≥ min_n, feed parity, archive audit, and source is not a repo fixture
 
 # Will NOT invent numbers:
