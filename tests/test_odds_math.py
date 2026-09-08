@@ -4,9 +4,11 @@ from sporty_hq.odds_math import (
     decimal_to_american,
     edge,
     implied_prob,
+    juice_compare_to_win,
     juice_pct,
     multiplicative_devig,
     parse_american,
+    risk_to_win,
     settle_pnl,
 )
 import pytest
@@ -62,3 +64,26 @@ def test_rejects_zero_odds() -> None:
         implied_prob(0)
     with pytest.raises(ValueError):
         settle_pnl("draw", 25, 100)
+
+
+def test_risk_to_win_100_juice_compare() -> None:
+    assert risk_to_win(-110) == 110.0
+    assert risk_to_win(-120) == 120.0
+    assert risk_to_win(150) == pytest.approx(66.67, abs=0.005)
+    assert risk_to_win(140) == pytest.approx(71.43, abs=0.005)
+    assert risk_to_win(100) == 100.0
+
+    better, worse, risk_b, risk_w, diff = juice_compare_to_win(-110, -120)
+    assert better == -110
+    assert worse == -120
+    assert risk_b == 110.0
+    assert risk_w == 120.0
+    assert diff == 10.0
+
+    better, worse, risk_b, risk_w, diff = juice_compare_to_win(140, 165)
+    assert better == 165
+    assert worse == 140
+    assert risk_b == pytest.approx(60.61, abs=0.005)
+    assert risk_w == pytest.approx(71.43, abs=0.005)
+    assert diff == pytest.approx(risk_w - risk_b, abs=0.001)
+    assert diff > 0

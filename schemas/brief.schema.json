@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/brief.schema.json",
+  "title": "Sporty HQ Odds Arcade brief",
+  "description": "Education-only daily brief. Sporty HQ does not place bets. Open lines come from earlier ingest snapshots; example=true when the open is illustrated because none was on file.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "kind",
+    "as_of",
+    "disclaimer",
+    "line_move_of_the_day",
+    "juice_explainer"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "odds_arcade_brief" },
+    "as_of": { "type": "string" },
+    "cadence": {
+      "type": "object",
+      "properties": {
+        "daily": { "type": "string" },
+        "pack": { "type": "string" },
+        "closes": { "type": "string" }
+      }
+    },
+    "disclaimer": { "type": "string" },
+    "line_move_of_the_day": { "$ref": "#/$defs/line_move" },
+    "juice_explainer": { "$ref": "#/$defs/juice_explainer" },
+    "close_challenge_pack": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/challenge_game" }
+    },
+    "close_challenge_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/challenge_result" }
+    }
+  },
+  "$defs": {
+    "line_move": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sport",
+        "event",
+        "market",
+        "open_line",
+        "open_price",
+        "current_line",
+        "current_price",
+        "delta",
+        "why_hint",
+        "as_of",
+        "example"
+      ],
+      "properties": {
+        "sport": { "type": "string" },
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "selection": { "type": "string" },
+        "open_line": { "type": ["number", "null"], "description": "Spread/total point; null for ML" },
+        "open_price": { "type": "integer", "description": "American odds at open" },
+        "current_line": { "type": ["number", "null"] },
+        "current_price": { "type": "integer" },
+        "delta": { "type": "number", "description": "Line delta when points exist; otherwise price delta" },
+        "why_hint": { "type": "string" },
+        "as_of": { "type": "string" },
+        "example": {
+          "type": "boolean",
+          "description": "true when open is illustrated because HQ has no earlier snapshot"
+        }
+      }
+    },
+    "juice_explainer": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "event",
+        "market",
+        "selection",
+        "better_price",
+        "worse_price",
+        "risk_to_win_100_better",
+        "risk_to_win_100_worse",
+        "diff_usd",
+        "as_of",
+        "example"
+      ],
+      "properties": {
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "selection": { "type": "string" },
+        "better_price": { "type": "integer", "description": "More favorable American price" },
+        "worse_price": { "type": "integer" },
+        "risk_to_win_100_better": { "type": "number" },
+        "risk_to_win_100_worse": { "type": "number" },
+        "diff_usd": { "type": "number", "description": "Extra stake at the worse number to win $100" },
+        "as_of": { "type": "string" },
+        "example": { "type": "boolean" }
+      }
+    },
+    "challenge_game": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sport",
+        "event",
+        "market",
+        "current_line",
+        "current_price",
+        "as_of",
+        "example"
+      ],
+      "properties": {
+        "sport": { "type": "string" },
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "selection": { "type": "string" },
+        "current_line": { "type": ["number", "null"] },
+        "current_price": { "type": "integer" },
+        "as_of": { "type": "string" },
+        "example": { "type": "boolean" }
+      }
+    },
+    "challenge_result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sport",
+        "event",
+        "market",
+        "current_line",
+        "current_price",
+        "close_line",
+        "close_price",
+        "beat_close",
+        "note",
+        "as_of",
+        "example"
+      ],
+      "properties": {
+        "sport": { "type": "string" },
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "selection": { "type": "string" },
+        "current_line": { "type": ["number", "null"] },
+        "current_price": { "type": "integer" },
+        "close_line": { "type": ["number", "null"] },
+        "close_price": { "type": ["integer", "null"] },
+        "beat_close": { "type": ["boolean", "null"] },
+        "note": { "type": "string" },
+        "as_of": { "type": "string" },
+        "example": { "type": "boolean" }
+      }
+    }
+  }
+}

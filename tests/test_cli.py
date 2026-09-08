@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -154,6 +155,61 @@ def test_demo(data_dir: Path) -> None:
     assert (data_dir / "sample_session.json").exists()
     report = (data_dir / "clv-report.md").read_text(encoding="utf-8")
     assert "not FanDuel fills" in report
+
+
+def test_brief_help_and_fixture_json(data_dir: Path) -> None:
+    r = runner.invoke(app, ["brief", "--help"])
+    assert r.exit_code == 0, r.output
+    help_text = " ".join(r.output.lower().split())
+    assert "does not place" in help_text and "bets" in help_text
+    assert "--pack" in r.output
+    assert "--closes" in r.output
+
+    out = data_dir / "brief.json"
+    r = runner.invoke(
+        app,
+        [
+            "brief",
+            "--source",
+            "fixture",
+            "--path",
+            str(DEMO_JSON),
+            "--pack",
+            "--format",
+            "json",
+            "--out",
+            str(out),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "does not place bets" in r.output.lower()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["kind"] == "odds_arcade_brief"
+    assert payload["line_move_of_the_day"]["example"] is True
+    assert payload["juice_explainer"]["example"] is False
+    assert 2 <= len(payload["close_challenge_pack"]) <= 3
+    assert (data_dir / "close_challenge_pack.json").exists()
+
+    r = runner.invoke(
+        app,
+        [
+            "brief",
+            "--source",
+            "fixture",
+            "--path",
+            str(DEMO_JSON),
+            "--closes",
+            "--format",
+            "md",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "Close-challenge results" in r.output
+    assert "beat close" in r.output.lower()
 
 
 def test_parlay_rejected(data_dir: Path) -> None:

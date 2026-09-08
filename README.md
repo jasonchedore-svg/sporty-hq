@@ -87,6 +87,7 @@ Day-to-day:
 ```bash
 sporty ingest --source fixture --path fixtures/demo_odds.json
 sporty scan --alerts          # quiet if nothing ≥3%
+sporty brief                  # Odds Arcade education brief (JSON)
 sporty log-bet --candidate-id 1 --pick "Yankees"   # after YOU bet on mobile
 sporty settle <bet-id> --result win --close-odds +148
 sporty session                # data/session.json
@@ -98,6 +99,32 @@ sporty alert-test
 ```bash
 pytest
 ```
+
+---
+
+## Odds Arcade brief
+
+Education-only copy for a daily drop. **Sporty HQ does not place bets**, does not fake fills, and does not log into FanDuel. Briefs explain line moves and juice; they are not tickets.
+
+Cadence (America/New_York):
+
+| When | Command | Contents |
+|---|---|---|
+| **Daily 9am** | `sporty brief` | `line_move_of_the_day` + `juice_explainer` ($100 risk compare) |
+| **Thursday** | `sporty brief --pack` | Close-challenge pack (2–3 games); saved under `data/close_challenge_pack.json` |
+| **Friday** | `sporty brief --closes` | Pack vs close: `close_line`, `close_price`, `beat_close` + note |
+
+Schema: `schemas/brief.schema.json`. JSON is the default; `--format md` prints markdown.
+
+Open lines come from **earlier ingest snapshots** in the HQ database. A single fixture snapshot has no open, so `line_move_of_the_day.example` is `true` and `why_hint` says the open is illustrated. Juice compare uses live/fixture books when two prices exist (`example=false`).
+
+```bash
+sporty brief --source fixture --path fixtures/demo_odds.json
+sporty brief --pack --format md
+sporty brief --closes --out data/brief-closes.json
+```
+
+`$100` juice math (American): plus money risks `100 × 100 / odds` to win $100; minus money risks `|odds|` to win $100. `diff_usd` is the extra stake at the worse number.
 
 ---
 
@@ -179,16 +206,17 @@ Slack (`SPORTY_HQ_ENABLE_SLACK`, `SLACK_WEBHOOK_URL`) is documented for a later 
 
 ```
 src/sporty_hq/
-  cli.py          # ingest, scan, log-bet, settle, clv-report, session, alert-test, remind, demo
+  cli.py          # ingest, scan, log-bet, settle, clv-report, brief, session, alert-test, remind, demo
+  brief.py        # Odds Arcade education brief (no bet placement)
   engine.py       # consensus de-vig + edge; v1 sport calendar
   sports.py       # MLB/NFL first, Week 1 Wed+, NCAAF, in-season NBA/NHL, liquid soccer
   session.py      # session.json + bet-log columns
-  odds_math.py    # American, juice, CLV (flat=0), P&L
+  odds_math.py    # American, juice, CLV (flat=0), P&L, risk-to-win-$100
   playbook.py     # stop, 1/event, straights, ~4/session
   storage.py      # SQLite
   reports.py      # markdown + HTML (exact columns)
   alerts/         # console + file + webhook; Slack optional
-schemas/          # session.json + bet log
+schemas/          # session.json + bet log + Odds Arcade brief
 fixtures/         # demo odds + sample_session.json (not fills)
 ```
 

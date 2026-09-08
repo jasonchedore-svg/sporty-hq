@@ -1,4 +1,4 @@
-"""Typer CLI: ingest/scan, log-bet, settle, clv-report, alert-test, remind, demo."""
+"""Typer CLI: ingest/scan, log-bet, settle, clv-report, brief, alert-test, remind, demo."""
 
 from __future__ import annotations
 
@@ -14,6 +14,13 @@ from rich.table import Table
 
 from sporty_hq import DISCLAIMER, __version__
 from sporty_hq.alerts.bus import AlertBus
+from sporty_hq.brief import (
+    EDUCATION_FOOTER,
+    build_brief,
+    read_pack,
+    render_markdown as render_brief_markdown,
+    write_pack,
+)
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
 from sporty_hq.models import Alert, AlertType, Bet, Candidate, display_market, normalize_market
@@ -304,6 +311,66 @@ def clv_report(
         console.print(text)
 
 
+@app.command()
+def brief(
+    source: str = typer.Option(
+        "auto",
+        "--source",
+        help="auto (latest ingest, else fixture) | fixture | oddsapi",
+    ),
+    path: Optional[Path] = typer.Option(None, "--path", help="JSON or CSV fixture path"),
+    pack: bool = typer.Option(
+        False, "--pack", help="Thursday close-challenge pack (2–3 games); saved for Friday"
+    ),
+    closes: bool = typer.Option(
+        False,
+        "--closes",
+        "--results",
+        help="Friday close-challenge results vs the saved Thursday pack",
+    ),
+    fmt: str = typer.Option("json", "--format", help="json | md"),
+    out: Optional[Path] = typer.Option(None, "--out", help="Write file instead of stdout"),
+    book: Optional[str] = typer.Option(None, "--book", help="Target book (default fanduel)"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Odds Arcade education brief (line move + juice $100 compare). Does not place bets."""
+    settings = _settings(data_dir)
+    store = _store(settings)
+    quotes, history = _brief_quotes(settings, store, source=source, path=path)
+    if not quotes:
+        raise typer.Exit("No quotes for a brief. Run: sporty ingest --source fixture")
+    saved_pack = None
+    pack_path = settings.close_challenge_pack_path
+    if closes and pack_path.exists():
+        saved_pack = read_pack(pack_path)
+    payload = build_brief(
+        quotes,
+        history=history,
+        include_pack=pack,
+        include_closes=closes,
+        saved_pack=saved_pack,
+        target_book=book or settings.target_book,
+    )
+    if pack and payload.close_challenge_pack:
+        write_pack(pack_path, payload.close_challenge_pack, payload.as_of)
+    kind = fmt.strip().lower()
+    if kind in {"md", "markdown"}:
+        text = render_brief_markdown(payload)
+    elif kind == "json":
+        text = json.dumps(payload.to_json_dict(), indent=2, default=str)
+    else:
+        raise typer.BadParameter("format must be json or md")
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        console.print(f"Wrote {out}")
+    elif kind == "json":
+        console.print_json(data=payload.to_json_dict())
+    else:
+        console.print(text)
+    console.print(EDUCATION_FOOTER)
+
+
 @app.command("alert-test")
 def alert_test(
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
@@ -430,6 +497,38 @@ def demo(
     console.print(f"Wrote {report_path}, {html_path}, and {dest}")
     console.print("Hybrid: research/alerts only — never fake fills or place FanDuel bets.")
     console.print(DISCLAIMER)
+
+
+def _brief_quotes(
+    settings: Settings,
+    store: Store,
+    *,
+    source: str,
+    path: Optional[Path],
+) -> tuple[list, list]:
+    """Current quotes plus chronological history from the store (open vs current)."""
+    kind = source.strip().lower()
+    history = store.quotes_chronological()
+    if kind in {"fixture", "json", "csv", "file"} or (path is not None and kind == "auto"):
+        fixture_path = path or DEFAULT_FIXTURE
+        provider = load_provider("fixture", path=fixture_path)
+        return provider.fetch_quotes(), history
+    if kind in {"oddsapi", "theoddsapi", "the-odds-api"}:
+        api_key = (
+            settings.the_odds_api_key.get_secret_value()
+            if settings.secret_configured("the_odds_api_key")
+            else None
+        )
+        provider = load_provider("oddsapi", api_key=api_key)
+        return provider.fetch_quotes(), history
+    if kind not in {"auto", "db", "store"}:
+        raise typer.BadParameter("source must be auto, fixture, or oddsapi")
+    batch_id = store.latest_batch_id()
+    if batch_id:
+        return store.quotes_for_batch(batch_id), history
+    fixture_path = path or DEFAULT_FIXTURE
+    provider = load_provider("fixture", path=fixture_path)
+    return provider.fetch_quotes(), history
 
 
 def _print_candidates(candidates: list[Candidate], min_edge: float) -> None:
