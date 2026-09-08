@@ -211,6 +211,15 @@ def assumption_log(*, seasons: int, min_n: int, sample: bool) -> list[dict[str, 
             ),
         },
         {
+            "id": "caveat",
+            "statement": (
+                "CAVEAT: a passing historical backtest only shows would-have-beaten-the-close "
+                "on that prior-season sample. Backtest ≠ will work again. Gate 2 "
+                "(current-season paper ~2–3 weeks, avg CLV > 0) is required before any "
+                "live consideration. Kill switch is unchanged."
+            ),
+        },
+        {
             "id": "no_live",
             "statement": (
                 "This command does not place bets, does not unlock live logging, and does not "
@@ -321,7 +330,10 @@ def run_backtest(
     else:
         health = ModelHealth.PASSING.value
         clv_ok = True
-        clv_note = f"Backtest avg CLV {avg:+.2f} on n={n} across seasons {chosen}."
+        clv_note = (
+            f"Backtest avg CLV {avg:+.2f} on n={n} across seasons {chosen}. "
+            "CAVEAT: backtest ≠ will work again — paper confirm still required."
+        )
     blockers: list[str] = []
     if not audit.passed:
         blockers.append(audit.detail)

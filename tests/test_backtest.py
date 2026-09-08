@@ -82,7 +82,10 @@ def test_backtest_clears_on_opticodds_fanduel_plus_pinnacle_true_close() -> None
     assert result.cleared is True
     assert result.sample is False
     ids = {a["id"] for a in result.assumptions}
-    assert {"clv_formula", "vig", "feed_parity", "close_definition", "lookback", "filters"} <= ids
+    assert {"clv_formula", "vig", "feed_parity", "close_definition", "lookback", "filters", "caveat"} <= ids
+    assert "backtest ≠ will work again" in result.note or any(
+        "will work again" in a["statement"] for a in result.assumptions
+    )
     sources = {d["id"] for d in result.data_sources}
     assert "odds_api" in sources
     assert "archive_file" in sources

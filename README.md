@@ -25,9 +25,11 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
             ├─ scan (optional candy) + Pinnacle overlay + fractional Kelly cap 1u
             ├─ post-result lessons (settle --postmortem/--lesson → next scan)
             └─ daily −$100 / seasonal −$500 stops (live); kill switch armed
-            │
+            │  human-source / lessons HOLD until feed+dashboard logging
             ▼
-     gate 1 historical backtest (same OpticOdds+Pinnacle feed) → ~2–3 week paper → live
+     gate 1 historical backtest (caveat: ≠ will work again)
+            → gate 2 paper ~2–3 weeks, avg CLV must stay > 0
+            → live only then
 ```
 
 | Layer | What it does | What it does not |
@@ -105,6 +107,16 @@ See `schemas/session.schema.json`. Runtime file: `data/session.json` (gitignored
 ```
 
 `status`: `open` | `stopped` | `closed` | `sample` (fixture illustration only). `bets[]` rows use the log columns (`time_et`, `event`, `market`, `pick`, …). HQ writes this from **user-logged** tickets after `log-bet` / `settle` — it never invents a FanDuel fill.
+
+---
+
+## Validation path (owner lock)
+
+Build order does not change: **CLV dashboard first** → **OpticOdds realtime + Pinnacle sharp** → hold human-source/tipster lessons until feed+dashboard are logging. Scan is not the scoreboard. Kill switch is unchanged (A: acted before gates; B: paper avg CLV ≤ 0 at n≥100).
+
+1. **Gate 1 — historical backtest** vs prior season(s) closing lines (1–3 seasons). Same CLV math as the dashboard. Must beat the close (`avg CLV > 0`) on the OpticOdds+Pinnacle path. **Caveat: backtest ≠ will work again.**
+2. **Gate 2 — paper the current season ~2–3 weeks** (default 21 days; not a full 17-week NFL slate). Avg CLV must **stay positive** or this gate (and live) un-clears.
+3. **Live only after both gates**, and only while paper avg CLV stays positive. `log-bet --live` before that trips kill switch A.
 
 ---
 

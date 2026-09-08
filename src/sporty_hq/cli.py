@@ -32,7 +32,6 @@ from sporty_hq.backtest import load_historical_closes, run_backtest, save_result
 from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
-from sporty_hq.lessons import apply_lessons
 from sporty_hq.gates import evaluate_gates
 from sporty_hq.killswitch import (
     ReviewArtifactError,
@@ -223,9 +222,11 @@ def scan(
     now = utcnow()
     gates = evaluate_gates(store, settings, now)
     console.print(
-        f"CLV is the scoreboard. Gate 1 backtest={'cleared' if gates.backtest.cleared else 'open'}. "
-        f"Gate 2 paper confirm={'cleared' if gates.paper_confirm.cleared else 'open'}. "
-        "Scan is optional prediction candy — not a ticket."
+        f"CLV is the scoreboard. Gate 1 backtest={'cleared' if gates.backtest.cleared else 'open'} "
+        f"(caveat: backtest ≠ will work again). "
+        f"Gate 2 paper confirm={'cleared' if gates.paper_confirm.cleared else 'open'} "
+        "(~2–3 weeks, avg CLV must stay > 0). "
+        "Scan is optional prediction candy — not a ticket. Human-source HOLD."
     )
     if alerts and not gates.live_unlocked:
         _trip_acted(settings, store, action="scan --alerts")
@@ -241,7 +242,7 @@ def scan(
         min_edge=settings.min_edge,
     )
     candidates = score_quotes(quotes, config)
-    apply_lessons(candidates, store.list_lessons())
+    # Human-source lessons HOLD until feed + CLV dashboard are logging.
     if settings.kelly_fraction > 0:
         for cand in candidates:
             cand.suggested_stake = suggested_stake(

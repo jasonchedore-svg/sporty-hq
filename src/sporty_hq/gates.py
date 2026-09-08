@@ -121,11 +121,12 @@ def _paper_confirm_gate(
     *,
     since: datetime | None,
 ) -> GateResult:
-    """Current-season paper for paper_confirm_days (default 21 ≈ 3 weeks).
+    """Current-season paper for paper_confirm_days (default 21 ≈ 3 weeks, not 17).
 
+    Avg CLV must stay > 0 or this gate (and live) un-clears. This is NOT the
+    100+ kill-switch sample — kill switch B still trips at n≥100 and avg CLV ≤ 0.
     Hypothesis: min n = paper_confirm_min_n (default 12) so a handful of lucky
-    tickets cannot clear the gate. Avg CLV must be > 0. This is NOT the 100+
-    kill-switch sample.
+    tickets cannot clear the gate.
     """
     papers = [b for b in paper_tickets(bets, since=since) if b.clv_pct is not None]
     n = len(papers)
@@ -150,7 +151,7 @@ def _paper_confirm_gate(
     cleared = ok_span and ok_n and ok_clv
     detail = (
         f"Paper confirm n={n} (min {need_n}), span {span_days}d (need {need_days}d ≈ 2–3 weeks), "
-        f"avg CLV {avg}. "
+        f"avg CLV {avg} (must stay > 0). "
         + ("Cleared." if cleared else "Not cleared — keep paper logging, do not go live.")
     )
     return GateResult(
