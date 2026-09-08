@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,6 +11,11 @@ from sporty_hq.storage import Store
 from tests.conftest import DEMO_CSV, DEMO_JSON
 
 runner = CliRunner()
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI.sub("", text)
 
 
 def test_ingest_scan_log_settle_report(data_dir: Path) -> None:
@@ -160,10 +166,10 @@ def test_demo(data_dir: Path) -> None:
 def test_brief_help_and_fixture_json(data_dir: Path) -> None:
     r = runner.invoke(app, ["brief", "--help"])
     assert r.exit_code == 0, r.output
-    help_text = " ".join(r.output.lower().split())
+    help_text = " ".join(_plain(r.output).lower().split())
     assert "does not place" in help_text and "bets" in help_text
-    assert "--pack" in r.output
-    assert "--closes" in r.output
+    assert "--pack" in help_text
+    assert "--closes" in help_text
 
     out = data_dir / "brief.json"
     r = runner.invoke(
