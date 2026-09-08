@@ -14,6 +14,7 @@ POSTMORTEM_TAGS = frozenset(
     {"injury_missed", "weather_ignored", "steam_missed", "other"}
 )
 SHARP_BOOK_DEFAULT = "pinnacle"
+TICKET_KINDS = frozenset({"paper", "live"})
 
 MARKET_ALIASES = {
     "ml": "ml",
@@ -42,6 +43,7 @@ class AlertType(str, Enum):
     PRE_GAME_REMINDER = "pre_game_reminder"
     SETTLE_REMINDER = "settle_reminder"
     TEST = "test"
+    KILL_SWITCH = "kill_switch"
 
 
 def normalize_market(market: str) -> str:
@@ -68,6 +70,13 @@ def normalize_postmortem(tag: str) -> str:
         raise ValueError(
             f"Postmortem '{tag}' is not one of: {', '.join(sorted(POSTMORTEM_TAGS))}"
         )
+    return key
+
+
+def normalize_kind(kind: str) -> str:
+    key = (kind or "paper").strip().lower()
+    if key not in TICKET_KINDS:
+        raise ValueError(f"Ticket kind '{kind}' is not paper or live")
     return key
 
 
@@ -148,6 +157,7 @@ class Bet:
     point: float | None = None
     postmortem: str | None = None
     lesson: str = ""
+    kind: str = "paper"
 
     @property
     def is_open(self) -> bool:

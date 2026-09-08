@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS bets (
     edge_note TEXT NOT NULL DEFAULT '',
     settled_at TEXT,
     postmortem TEXT,
-    lesson TEXT NOT NULL DEFAULT ''
+    lesson TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'paper'
 );
 
 CREATE INDEX IF NOT EXISTS idx_bets_event ON bets(event_id);
@@ -105,6 +106,15 @@ CREATE TABLE IF NOT EXISTS lessons (
 
 CREATE INDEX IF NOT EXISTS idx_lessons_sport ON lessons(sport);
 CREATE INDEX IF NOT EXISTS idx_lessons_market ON lessons(market);
+
+CREATE TABLE IF NOT EXISTS desk_events (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    trip TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    review_path TEXT
+);
 
 CREATE TABLE IF NOT EXISTS alerts_sent (
     id INTEGER PRIMARY KEY,
@@ -274,8 +284,8 @@ class Store:
                 INSERT INTO bets (
                     id, logged_at, event_id, event_name, sport, commence_at, market,
                     selection, point, odds_at_bet, stake, result, close_odds, clv_pct,
-                    pnl, edge_note, settled_at, postmortem, lesson
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pnl, edge_note, settled_at, postmortem, lesson, kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bet.id,
@@ -297,6 +307,7 @@ class Store:
                     bet.settled_at.isoformat() if bet.settled_at else None,
                     bet.postmortem,
                     bet.lesson,
+                    bet.kind or "paper",
                 ),
             )
 
@@ -305,7 +316,7 @@ class Store:
             conn.execute(
                 """
                 UPDATE bets SET result=?, close_odds=?, clv_pct=?, pnl=?, edge_note=?,
-                    settled_at=?, postmortem=?, lesson=?
+                    settled_at=?, postmortem=?, lesson=?, kind=?
                 WHERE id=?
                 """,
                 (
@@ -317,6 +328,7 @@ class Store:
                     bet.settled_at.isoformat() if bet.settled_at else None,
                     bet.postmortem,
                     bet.lesson,
+                    bet.kind or "paper",
                     bet.id,
                 ),
             )
@@ -388,6 +400,30 @@ class Store:
             ).fetchall()
         return [_lesson_from_row(row) for row in rows]
 
+    def record_desk_event(
+        self,
+        *,
+        kind: str,
+        trip: str | None,
+        detail: str,
+        review_path: str | None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO desk_events (created_at, kind, trip, detail, review_path)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (utcnow().isoformat(), kind, trip, detail, review_path),
+            )
+
+    def list_desk_events(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM desk_events ORDER BY created_at ASC, id ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def claim_alert(self, dedup_key: str, alert_type: str, payload: dict[str, Any]) -> bool:
         """Return True if this key is new (alert should send)."""
         try:
@@ -426,6 +462,8 @@ def _migrate_bets(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE bets ADD COLUMN postmortem TEXT")
     if "lesson" not in names:
         conn.execute("ALTER TABLE bets ADD COLUMN lesson TEXT NOT NULL DEFAULT ''")
+    if "kind" not in names:
+        conn.execute("ALTER TABLE bets ADD COLUMN kind TEXT NOT NULL DEFAULT 'paper'")
 
 
 def _quote_from_row(row: sqlite3.Row) -> Quote:
@@ -494,6 +532,7 @@ def _bet_from_row(row: sqlite3.Row) -> Bet:
         settled_at=parse_dt(row["settled_at"]),
         postmortem=_row_optional_str(row, "postmortem"),
         lesson=_row_optional_str(row, "lesson") or "",
+        kind=_row_optional_str(row, "kind") or "paper",
     )
 
 

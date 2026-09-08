@@ -21,12 +21,25 @@ from sporty_hq.brief import (
     render_markdown as render_brief_markdown,
     write_pack,
 )
+from sporty_hq.archive import (
+    OWNER_ARCHIVE_CLEARED_AT,
+    OWNER_ARCHIVE_STATUS,
+    audit_archive,
+    load_documented_gaps,
+    save_audit,
+)
+from sporty_hq.backtest import load_historical_closes, run_backtest, save_result
 from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
-from sporty_hq.lessons import apply_lessons
+from sporty_hq.gates import evaluate_gates
+from sporty_hq.killswitch import (
+    ReviewArtifactError,
+    maybe_trip_paper_clv,
+    resume as resume_desk,
+    trip_acted_before_gate,
+)
 from sporty_hq.models import (
-    POSTMORTEM_TAGS,
     Alert,
     AlertType,
     Bet,
@@ -45,7 +58,12 @@ from sporty_hq.playbook import (
     validate_new_bet,
 )
 from sporty_hq.providers import load_provider
-from sporty_hq.reports import ModelHealth, render_html, render_markdown, summarize
+from sporty_hq.reports import (
+    ModelHealth,
+    paper_clv_summary,
+    render_html,
+    render_markdown,
+)
 from sporty_hq.session import persist_live_session, read_session, session_row_to_bet
 from sporty_hq.storage import Store, utcnow
 from sporty_hq.streaming import (
@@ -86,6 +104,47 @@ def _store(settings: Settings) -> Store:
 
 def _short_id() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def _sync_kill_switch(settings: Settings, store: Store):
+    return maybe_trip_paper_clv(
+        settings.data_dir,
+        store,
+        unit=settings.unit_stake,
+        judge_n=settings.clv_judge_n,
+    )
+
+
+def _require_ops(settings: Settings, store: Store) -> None:
+    """Refuse ingest/scan/log/remind while paused. Settle + CLV report stay up."""
+    desk = _sync_kill_switch(settings, store)
+    if desk.paused:
+        console.print(f"[red]{desk.pause_message()}[/red]")
+        raise typer.Exit(1)
+
+
+def _trip_acted(settings: Settings, store: Store, action: str) -> None:
+    paper = paper_clv_summary(store.list_bets(), settings.unit_stake, settings.clv_judge_n)
+    desk = trip_acted_before_gate(
+        settings.data_dir,
+        store,
+        action=action,
+        paper_health=paper.health,
+        paper_n=paper.clv_n,
+        judge_n=settings.clv_judge_n,
+    )
+    bus = AlertBus.from_settings(store, settings)
+    bus.publish(
+        Alert(
+            type=AlertType.KILL_SWITCH,
+            title="Kill switch PAUSED",
+            body=desk.pause_message(),
+            dedup_key=f"kill_switch:{desk.trip}:{desk.tripped_at}",
+            payload={"trip": desk.trip, "detail": desk.detail},
+        )
+    )
+    console.print(f"[red]{desk.pause_message()}[/red]")
+    raise typer.Exit(1)
 
 
 def _sync_session(settings: Settings, store: Store, now: datetime | None = None) -> None:
@@ -129,6 +188,7 @@ def ingest(
     """Load odds. Live prefers OpticOdds SSE push; no key → fixture. Never scrapes in a loop."""
     settings = _settings(data_dir)
     store = _store(settings)
+    _require_ops(settings, store)
     quotes, provider_name, note = _ingest_quotes(
         settings, source=source, path=path, replay=replay, max_events=max_events
     )
@@ -155,18 +215,21 @@ def scan(
     json_out: bool = typer.Option(False, "--json", help="Print candidates as JSON"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Score latest ingest vs consensus; print ranked candidates ≥ min edge.
-
-    Refuses to emit keepers when the daily or seasonal stop is already hit.
-    """
+    """Optional prediction candy. CLV dashboard is the scoreboard. Held behind the gate."""
     settings = _settings(data_dir, min_edge)
     store = _store(settings)
+    _require_ops(settings, store)
     now = utcnow()
+    gates = evaluate_gates(store, settings, now)
+    console.print(
+        f"CLV is the scoreboard. Gate 1 backtest={'cleared' if gates.backtest.cleared else 'open'}. "
+        f"Gate 2 paper confirm={'cleared' if gates.paper_confirm.cleared else 'open'}. "
+        "Scan is optional prediction candy — not a ticket."
+    )
+    if alerts and not gates.live_unlocked:
+        _trip_acted(settings, store, action="scan --alerts")
     stops = stop_status(store, settings, now)
     console.print(format_stop_block(stops, settings))
-    if stops.hit:
-        console.print("Scan skipped — playbook stop is hit. HQ does not place bets.")
-        raise typer.Exit(1)
     batch_id = store.latest_batch_id()
     if not batch_id:
         raise typer.Exit("No odds ingested yet. Run: sporty ingest --source fixture")
@@ -177,7 +240,7 @@ def scan(
         min_edge=settings.min_edge,
     )
     candidates = score_quotes(quotes, config)
-    apply_lessons(candidates, store.list_lessons())
+    # Human-source lessons are HELD until CLV + Pinnacle are live and logging.
     if settings.kelly_fraction > 0:
         for cand in candidates:
             cand.suggested_stake = suggested_stake(
@@ -215,14 +278,25 @@ def log_bet(
     edge_note: str = typer.Option("", "--edge-note", "--notes", help="Edge note column"),
     sport: str = typer.Option("", "--sport"),
     point: Optional[float] = typer.Option(None, "--point"),
-    force: bool = typer.Option(False, "--force", help="Override session cap (not daily/seasonal stops)"),
-    kelly: bool = typer.Option(False, "--kelly", help="Fractional Kelly size, capped at 1 unit unless configured"),
+    force: bool = typer.Option(False, "--force", help="Override session cap (not kill switch / live lock)"),
+    kelly: bool = typer.Option(False, "--kelly", help="Held: not the primary path. Cap 1 unit if used."),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Live ticket. Locked until historical backtest + ~2–3 week paper confirm. Default is paper.",
+    ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Append a bet you placed on mobile. HQ never places it for you."""
+    """Log a PAPER ticket for the CLV dashboard (default). HQ never places FanDuel bets."""
     settings = _settings(data_dir)
     store = _store(settings)
+    _require_ops(settings, store)
     now = utcnow()
+    kind = "live" if live else "paper"
+    if live:
+        gates = evaluate_gates(store, settings, now)
+        if not gates.live_unlocked:
+            _trip_acted(settings, store, action="log-bet --live")
     cand: Candidate | None = None
     if candidate_id is not None:
         cand = store.get_candidate(candidate_id)
@@ -271,6 +345,7 @@ def log_bet(
             stake=stake_v,
             now=now,
             force=force,
+            kind=kind,
         )
     except PlaybookViolation as exc:
         raise typer.Exit(str(exc)) from exc
@@ -288,6 +363,7 @@ def log_bet(
         odds_at_bet=american,
         stake=stake_v,
         edge_note=edge_note or (cand.rationale if cand else ""),
+        kind=kind,
     )
     store.insert_bet(bet)
     _sync_session(settings, store, now)
@@ -297,7 +373,7 @@ def log_bet(
         )
     snap = session_snapshot(store, settings, now)
     console.print(
-        f"Logged bet [bold]{bet.id}[/bold] {bet.event_name} {display_market(bet.market)} "
+        f"Logged {kind} ticket [bold]{bet.id}[/bold] {bet.event_name} {display_market(bet.market)} "
         f"{bet.selection} {_fmt_odds(bet.odds_at_bet)} stake ${bet.stake:.0f}"
     )
     console.print(
@@ -317,12 +393,14 @@ def settle(
     postmortem: Optional[str] = typer.Option(
         None,
         "--postmortem",
-        help="Required on loss: injury_missed | weather_ignored | steam_missed | other",
+        help="HELD human-source field: injury_missed | weather_ignored | steam_missed | other",
     ),
-    lesson: Optional[str] = typer.Option(None, "--lesson", help="Free-text lesson persisted for later scans"),
+    lesson: Optional[str] = typer.Option(
+        None, "--lesson", help="HELD: optional free-text; not required to settle"
+    ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Settle a logged bet. Close line is required; CLV is computed (flat=0). HQ never fills."""
+    """Settle a ticket. Close line is required so CLV can be scored. Allowed while paused."""
     settings = _settings(data_dir)
     store = _store(settings)
     bet = store.get_bet(bet_id)
@@ -340,17 +418,7 @@ def settle(
     if notes:
         bet.edge_note = (bet.edge_note + " | " if bet.edge_note else "") + notes
     tag: str | None = None
-    if kind == "loss":
-        if not postmortem:
-            raise typer.BadParameter(
-                "Loss requires --postmortem "
-                f"({', '.join(sorted(POSTMORTEM_TAGS))}) and preferably --lesson."
-            )
-        try:
-            tag = normalize_postmortem(postmortem)
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-    elif postmortem:
+    if postmortem:
         try:
             tag = normalize_postmortem(postmortem)
         except ValueError as exc:
@@ -375,12 +443,15 @@ def settle(
             )
         )
     _sync_session(settings, store)
+    desk = _sync_kill_switch(settings, store)
     clv_txt = "0" if bet.clv_pct == 0 else f"{bet.clv_pct:+.2f}%"
     extra = f" postmortem={tag}" if tag else ""
     console.print(
         f"Settled {bet.id} {bet.result} pnl ${bet.pnl:+.2f} CLV {clv_txt} "
         f"(bet {_fmt_odds(bet.odds_at_bet)} close {_fmt_odds(bet.close_odds)}){extra}"
     )
+    if desk.paused:
+        console.print(f"[red]{desk.pause_message()}[/red]")
 
 
 @app.command("clv-report")
@@ -394,19 +465,38 @@ def clv_report(
     ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Cumulative CLV dashboard. Average CLV is the primary health metric."""
+    """Cumulative CLV dashboard. Paper avg CLV is the primary health metric."""
     settings = _settings(data_dir)
     store = _store(settings)
     bets = store.list_bets()
-    summary = summarize(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
+    desk = _sync_kill_switch(settings, store)
+    paper = paper_clv_summary(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
+    gates = evaluate_gates(store, settings, utcnow())
     kind = fmt.strip().lower()
     if kind in {"md", "markdown"}:
-        text = render_markdown(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
+        text = render_markdown(
+            bets,
+            settings.unit_stake,
+            judge_n=settings.clv_judge_n,
+            desk=desk,
+            gates=gates,
+        )
     elif kind == "html":
-        text = render_html(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
+        text = render_html(
+            bets,
+            settings.unit_stake,
+            judge_n=settings.clv_judge_n,
+            desk=desk,
+            gates=gates,
+        )
     elif kind == "json":
         text = json.dumps(
-            {"summary": summary.__dict__, "bets": [b.to_row() for b in bets]},
+            {
+                "summary": paper.__dict__,
+                "kill_switch": desk.to_json_dict(),
+                "gates": gates.to_json_dict(),
+                "bets": [b.to_row() for b in bets],
+            },
             indent=2,
             default=str,
         )
@@ -418,8 +508,173 @@ def clv_report(
         console.print(f"Wrote {out}")
     else:
         console.print(text)
-    console.print(f"Model health: {summary.health} (avg CLV n={summary.clv_n})")
-    if gate and summary.health == ModelHealth.FAILING.value:
+    console.print(
+        f"Paper health: {paper.health} (avg CLV n={paper.clv_n}) · "
+        f"kill switch: {'PAUSED' if desk.paused else 'RUNNING'}"
+    )
+    if gate and (paper.health == ModelHealth.FAILING.value or desk.paused):
+        raise typer.Exit(1)
+
+
+@app.command("desk-status")
+def desk_status_cmd(
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Print kill-switch status (running | paused) and paper CLV gate."""
+    settings = _settings(data_dir)
+    store = _store(settings)
+    desk = _sync_kill_switch(settings, store)
+    paper = paper_clv_summary(store.list_bets(), settings.unit_stake, settings.clv_judge_n)
+    gates = evaluate_gates(store, settings, utcnow())
+    payload = {
+        "kill_switch": desk.to_json_dict(),
+        "paper_health": paper.health,
+        "paper_n": paper.clv_n,
+        "paper_avg_clv": paper.avg_clv,
+        "gates": gates.to_json_dict(),
+        "live_unlocked": gates.live_unlocked,
+    }
+    console.print_json(data=payload)
+
+
+@app.command()
+def resume(
+    review: Path = typer.Option(..., "--review", help="Written review artifact (required)"),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Resume after a kill-switch pause. Requires a written review. No --force."""
+    settings = _settings(data_dir)
+    store = _store(settings)
+    try:
+        desk = resume_desk(settings.data_dir, store, review)
+    except ReviewArtifactError as exc:
+        raise typer.Exit(str(exc)) from exc
+    console.print(f"Desk RUNNING. Review archived: {desk.review_path}")
+    console.print(desk.detail)
+
+
+@app.command("archive-audit")
+def archive_audit_cmd(
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="OpticOdds archive export (CSV/JSON). Required unless --owner-cleared."
+    ),
+    seasons: int = typer.Option(1, "--seasons", help="Trailing seasons to audit (1–3)"),
+    gaps: Optional[Path] = typer.Option(
+        None, "--gaps", help="JSON of documented coverage exclusions"
+    ),
+    owner_cleared: bool = typer.Option(
+        False,
+        "--owner-cleared",
+        help="Report the standing owner CLEARED flag (2026-09-08). File audit still required to score.",
+    ),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Audit OpticOdds historical archive before backtest. Does not invent closes."""
+    settings = _settings(data_dir)
+    if owner_cleared and path is None:
+        console.print_json(
+            data={
+                "owner_status": OWNER_ARCHIVE_STATUS,
+                "owner_cleared_at": OWNER_ARCHIVE_CLEARED_AT,
+                "passed": None,
+                "detail": (
+                    f"Owner flagged OpticOdds archive audit {OWNER_ARCHIVE_STATUS} "
+                    f"on {OWNER_ARCHIVE_CLEARED_AT}. Pass --path to run file checks "
+                    "(coverage, timestamps, true close vs last-seen). "
+                    "A CLEARED flag is not a CLV number."
+                ),
+            }
+        )
+        return
+    if path is None:
+        raise typer.BadParameter(
+            "Pass --path to an OpticOdds archive export, or --owner-cleared to print the standing flag."
+        )
+    rows = load_historical_closes(path)
+    documented = load_documented_gaps(gaps)
+    audit = audit_archive(rows, seasons_requested=seasons, documented_gaps=documented)
+    out = save_audit(settings.data_dir, audit)
+    console.print_json(data=audit.to_json_dict())
+    console.print(f"Wrote {out}")
+    if not audit.passed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def backtest(
+    path: Optional[Path] = typer.Option(
+        None,
+        "--path",
+        help="CSV/JSON OpticOdds archive export (posted vs close). Required. No silent fixture.",
+    ),
+    source: str = typer.Option(
+        "archive",
+        "--source",
+        help="archive (local export) | opticodds (refuses: SSE has no historical closes)",
+    ),
+    seasons: int = typer.Option(1, "--seasons", help="How many trailing seasons in the file (1–3)"),
+    gaps: Optional[Path] = typer.Option(
+        None, "--gaps", help="JSON of documented archive gaps/exclusions"
+    ),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
+) -> None:
+    """Gate 1: historical CLV vs closes on the OpticOdds+Pinnacle path. No bets."""
+    settings = _settings(data_dir)
+    store = _store(settings)
+    kind = source.strip().lower()
+    if kind in {"opticodds", "sse", "live", "stream"}:
+        keyed = settings.secret_configured("opticodds_api_key")
+        if not keyed:
+            console.print(
+                "[red]OPTICODDS_API_KEY is not set.[/red] OpticOdds SSE is realtime only and "
+                "does not contain historical closes. Export the cleared archive to CSV/JSON "
+                "and pass --path. HQ will not invent numbers."
+            )
+            raise typer.Exit(2)
+        console.print(
+            "[red]OpticOdds SSE is realtime only — there is no historical-close fetch in this CLI.[/red] "
+            "Export the owner-cleared archive to CSV/JSON and pass --path. "
+            "HQ will not invent closes from the live stream."
+        )
+        raise typer.Exit(2)
+    if kind not in {"archive", "file", "csv", "json"}:
+        raise typer.BadParameter("source must be archive (local export) or opticodds")
+    if path is None:
+        console.print(
+            "[red]--path is required.[/red] Pass the OpticOdds archive export (CSV/JSON) "
+            "with posted_feed=opticodds, posted_book=fanduel, close_book=pinnacle. "
+            "HQ will not silently load a fixture or invent closes."
+        )
+        raise typer.Exit(2)
+    rows = load_historical_closes(path)
+    documented = load_documented_gaps(gaps)
+    audit = audit_archive(rows, seasons_requested=seasons, documented_gaps=documented)
+    save_audit(settings.data_dir, audit)
+    result = run_backtest(
+        rows,
+        seasons=seasons,
+        min_n=settings.backtest_min_n,
+        source=str(path),
+        target_book=settings.target_book,
+        sharp_book=settings.sharp_book,
+        audit=audit,
+        documented_gaps=documented,
+    )
+    out = save_result(settings.data_dir, result)
+    store.record_desk_event(
+        kind="backtest",
+        trip=None,
+        detail=result.note,
+        review_path=str(out),
+    )
+    console.print_json(data=result.to_json_dict())
+    console.print(
+        f"avg CLV={result.avg_clv} n={result.n} health={result.health} "
+        f"cleared={result.cleared} feed_parity={result.feed_parity} "
+        f"archive_audit={result.archive_audit_passed} sample={result.sample}"
+    )
+    console.print(f"Wrote {out}")
+    if not result.cleared:
         raise typer.Exit(1)
 
 
@@ -524,6 +779,7 @@ def remind(
     if max_minutes is not None:
         settings.remind_max_minutes = max_minutes
     store = _store(settings)
+    _require_ops(settings, store)
     bus = AlertBus.from_settings(store, settings)
     now = utcnow()
     sent = 0
@@ -531,8 +787,15 @@ def remind(
     if wanted not in {"pre_game", "settle", "all"}:
         raise typer.BadParameter("--type must be pre_game, settle, or all")
 
+    gates = evaluate_gates(store, settings, now)
     if wanted in {"pre_game", "all"}:
-        sent += _pre_game_reminders(store, bus, settings, now)
+        if not gates.live_unlocked:
+            console.print(
+                "Pre-game alerts skipped — sending a reminder is acting before gates "
+                "(backtest + ~2–3 week paper). Kill switch stays armed."
+            )
+        else:
+            sent += _pre_game_reminders(store, bus, settings, now)
     if wanted in {"settle", "all"}:
         sent += _settle_reminders(store, bus, now)
     if sent == 0:

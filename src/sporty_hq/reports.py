@@ -11,6 +11,7 @@ from statistics import mean
 from sporty_hq import DISCLAIMER
 from sporty_hq.models import Bet
 from sporty_hq.session import BET_LOG_COLUMNS, log_row
+from typing import Any
 
 CLV_JUDGE_N = 100
 
@@ -38,6 +39,8 @@ class ClvSummary:
     units: float
     clv_ready: bool
     health: str = ModelHealth.INSUFFICIENT_SAMPLE.value
+    paper_n: int = 0
+    live_unlocked: bool = False
 
 
 def model_health(avg_clv: float | None, clv_n: int, judge_n: int = CLV_JUDGE_N) -> ModelHealth:
@@ -82,7 +85,46 @@ def summarize(bets: list[Bet], unit: float = 25.0, judge_n: int = CLV_JUDGE_N) -
         units=round(total_pnl / unit, 2) if unit else 0.0,
         clv_ready=len(clvs) >= judge_n,
         health=health.value,
+        paper_n=sum(1 for b in settled if is_paper(b) and b.clv_pct is not None),
+        live_unlocked=False,
     )
+
+
+def is_paper(bet: Bet) -> bool:
+    return (getattr(bet, "kind", None) or "paper").strip().lower() != "live"
+
+
+def paper_tickets(bets: list[Bet], *, since=None) -> list[Bet]:
+    pool = [b for b in bets if is_paper(b)]
+    if since is None:
+        return pool
+    return [b for b in pool if b.logged_at >= since]
+
+
+def paper_clv_summary(
+    bets: list[Bet],
+    unit: float = 25.0,
+    judge_n: int = CLV_JUDGE_N,
+    *,
+    since=None,
+) -> ClvSummary:
+    """Primary scoreboard: paper tickets only (posted vs close)."""
+    summary = summarize(paper_tickets(bets, since=since), unit, judge_n)
+    summary.paper_n = summary.clv_n
+    summary.live_unlocked = False  # live unlock is gates (backtest + 2–3 week paper), not n≥100
+    return summary
+
+
+def live_logging_allowed(
+    bets: list[Bet],
+    *,
+    unit: float = 25.0,
+    judge_n: int = CLV_JUDGE_N,
+    since=None,
+) -> tuple[bool, ClvSummary]:
+    """Paper CLV snapshot only. Live unlock lives in ``gates.evaluate_gates``."""
+    summary = paper_clv_summary(bets, unit, judge_n, since=since)
+    return False, summary
 
 
 def _fmt_odds(value: int | None) -> str:
@@ -123,18 +165,59 @@ def _clv_footnote(summary: ClvSummary, judge_n: int) -> str:
     )
 
 
+def _kill_switch_md(desk: Any, paper: ClvSummary, judge_n: int, gates: Any = None) -> list[str]:
+    status = "PAUSED" if desk is not None and getattr(desk, "paused", False) else "RUNNING"
+    trip = getattr(desk, "trip", None) if desk is not None else None
+    detail = getattr(desk, "detail", "") if desk is not None else ""
+    live = bool(gates.live_unlocked) if gates is not None else False
+    bt = "—"
+    pc = "—"
+    if gates is not None:
+        bt = "cleared" if gates.backtest.cleared else "open"
+        pc = "cleared" if gates.paper_confirm.cleared else "open"
+    lines = [
+        "## Kill switch + validation gates",
+        "",
+        f"- Desk: **{status}**",
+        f"- Trip: **{trip or '—'}**",
+        "- Gate 1 backtest (prior 1–3 seasons vs close): **" + bt + "**",
+        "- Gate 2 paper confirm (current season ~2–3 weeks, not a full 17): **" + pc + "**",
+        f"- Feed path: **{getattr(gates, 'feed_id', None) or 'opticodds+pinnacle'}**",
+        f"- Live unlocked: **{live}** (both gates; kill switch not paused)",
+        f"- A) Pause if flagged research is acted on before those gates clear.",
+        f"- B) Pause if paper avg CLV is non-positive after n≥{judge_n} (health FAILING).",
+        f"- Paper health (kill-switch sample): **{paper.health}** n={paper.clv_n}",
+        "- Resume: written review artifact only (`sporty resume --review`). No silent override.",
+        "",
+    ]
+    if status == "PAUSED":
+        lines.extend(
+            [
+                f"> PAUSED ({trip}): {detail}",
+                "",
+            ]
+        )
+    return lines
+
+
 def render_markdown(
     bets: list[Bet],
     unit: float = 25.0,
     *,
     sample: bool = False,
     judge_n: int = CLV_JUDGE_N,
+    desk: Any = None,
+    gates: Any = None,
 ) -> str:
     summary = summarize(bets, unit, judge_n)
+    paper = paper_clv_summary(bets, unit, judge_n)
     wr = "—" if summary.win_rate is None else f"{summary.win_rate * 100:.1f}%"
     roi = "—" if summary.roi is None else f"{summary.roi * 100:.1f}%"
     avg_clv = "—" if summary.avg_clv is None else (
         "0" if abs(summary.avg_clv) < 1e-9 else f"{summary.avg_clv:+.2f}%"
+    )
+    paper_avg = "—" if paper.avg_clv is None else (
+        "0" if abs(paper.avg_clv) < 1e-9 else f"{paper.avg_clv:+.2f}%"
     )
     header = " | ".join(BET_LOG_COLUMNS)
     align = "|---|---|---|---|---:|---:|---:|---:|---|---:|---|"
@@ -151,6 +234,7 @@ def render_markdown(
                 "",
             ]
         )
+    lines.extend(_kill_switch_md(desk, paper, judge_n, gates))
     lines.extend(
         [
             "## Summary",
@@ -159,9 +243,10 @@ def render_markdown(
             f"- Record: **{summary.wins}-{summary.losses}-{summary.pushes}** (win rate {wr})",
             f"- P&L: **${summary.total_pnl:+.2f}** ({summary.units:+.2f} u @ ${unit:.0f})",
             f"- ROI: **{roi}** on ${summary.total_stake:.2f} settled stake",
-            f"- Avg CLV: **{avg_clv}** (n={summary.clv_n}) — **primary health metric**",
-            f"- Model health: **{summary.health}**",
-            f"- {_clv_footnote(summary, judge_n)}",
+            f"- Paper avg CLV: **{paper_avg}** (n={paper.clv_n}) — **primary health metric**",
+            f"- Paper health: **{paper.health}** · live unlocked: **{bool(gates.live_unlocked) if gates is not None else False}**",
+            f"- All-ticket avg CLV: **{avg_clv}** (n={summary.clv_n})",
+            f"- {_clv_footnote(paper, judge_n)}",
             "",
             "## Bet log",
             "",
@@ -202,13 +287,25 @@ def render_html(
     *,
     sample: bool = False,
     judge_n: int = CLV_JUDGE_N,
+    desk: Any = None,
+    gates: Any = None,
 ) -> str:
     summary = summarize(bets, unit, judge_n)
+    paper = paper_clv_summary(bets, unit, judge_n)
     wr = "—" if summary.win_rate is None else f"{summary.win_rate * 100:.1f}%"
     roi = "—" if summary.roi is None else f"{summary.roi * 100:.1f}%"
-    avg_clv = "—" if summary.avg_clv is None else (
-        "0" if abs(summary.avg_clv) < 1e-9 else f"{summary.avg_clv:+.2f}%"
+    avg_clv = "—" if paper.avg_clv is None else (
+        "0" if abs(paper.avg_clv) < 1e-9 else f"{paper.avg_clv:+.2f}%"
     )
+    paused = bool(desk is not None and getattr(desk, "paused", False))
+    trip = getattr(desk, "trip", None) if desk is not None else None
+    pause_banner = ""
+    if paused:
+        pause_banner = (
+            f'<p class="sub" style="color:#ff6b6b">KILL SWITCH PAUSED '
+            f"({html.escape(str(trip or ''))}). Resume requires a written review. "
+            "No silent override.</p>"
+        )
     heads = "".join(f"<th>{html.escape(col)}</th>" for col in BET_LOG_COLUMNS)
     rows = []
     for bet in bets:
@@ -281,14 +378,15 @@ def render_html(
   <h1>Sporty HQ</h1>
   <p class="sub">CLV, win rate, and P&amp;L · generated {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}</p>
   {banner}
+  {pause_banner}
   <div class="cards">
     <div class="card"><span>Record</span><strong>{summary.wins}-{summary.losses}-{summary.pushes}</strong></div>
     <div class="card"><span>Win rate</span><strong>{wr}</strong></div>
     <div class="card"><span>P&amp;L</span><strong>${summary.total_pnl:+.2f}</strong></div>
     <div class="card"><span>ROI</span><strong>{roi}</strong></div>
-    <div class="card"><span>Avg CLV</span><strong>{avg_clv}</strong></div>
-    <div class="card"><span>Health</span><strong>{summary.health}</strong></div>
-    <div class="card"><span>Open</span><strong>{summary.open_bets}</strong></div>
+    <div class="card"><span>Paper avg CLV</span><strong>{avg_clv}</strong></div>
+    <div class="card"><span>Health</span><strong>{paper.health}</strong></div>
+    <div class="card"><span>Kill switch</span><strong>{"PAUSED" if paused else "RUNNING"}</strong></div>
   </div>
   <table>
     <thead>

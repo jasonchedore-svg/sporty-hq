@@ -69,6 +69,7 @@ def bet_to_session_row(bet: Bet) -> dict[str, Any]:
         "edge_note": bet.edge_note,
         "event_id": bet.event_id,
         "sport": bet.sport,
+        "kind": getattr(bet, "kind", None) or "paper",
     }
 
 
@@ -209,6 +210,7 @@ def session_row_to_bet(row: dict[str, Any]) -> Bet:
         clv_pct=row.get("clv"),
         pnl=row.get("pnl"),
         edge_note=str(row.get("edge_note") or ""),
+        kind=str(row.get("kind") or "paper"),
     )
 
 

@@ -77,11 +77,22 @@ def test_daily_stop_blocks_scan_status(store, settings) -> None:
     assert status.hit
 
 
-def test_force_cannot_bypass_daily_stop(store, settings) -> None:
+def test_force_cannot_bypass_daily_stop_on_live_without_gates(store, settings) -> None:
     now = datetime.now(timezone.utc)
     store.insert_bet(_loss("e1", -100.0, id="d1", logged_at=now))
+    snap = validate_new_bet(
+        store, settings, event_id="e2", market="ml", stake=25, now=now, force=True, kind="paper"
+    )
+    assert snap.bets_logged >= 1
     with pytest.raises(PlaybookViolation) as exc:
         validate_new_bet(
-            store, settings, event_id="e2", market="ml", stake=25, now=now, force=True
+            store,
+            settings,
+            event_id="e2",
+            market="ml",
+            stake=25,
+            now=now,
+            force=True,
+            kind="live",
         )
-    assert exc.value.code == "daily_stop"
+    assert exc.value.code == "live_locked"

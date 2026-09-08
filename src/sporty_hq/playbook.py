@@ -8,7 +8,9 @@ from zoneinfo import ZoneInfo
 
 from sporty_hq.bankroll import season_start_et
 from sporty_hq.config import Settings
-from sporty_hq.models import normalize_market
+from sporty_hq.gates import evaluate_gates
+from sporty_hq.killswitch import load_status
+from sporty_hq.models import normalize_kind, normalize_market
 from sporty_hq.storage import Store
 
 
@@ -125,7 +127,10 @@ def format_stop_block(status: StopStatus, settings: Settings) -> str:
         f"({status.seasonal.bets_logged} bets since {status.seasonal.start.date()})",
     ]
     if status.hit:
-        lines.append("STOPPED — playbook refuses new bets. HQ does not place bets.")
+        lines.append(
+            "Money stop hit — new LIVE bets refused. Paper logging still allowed. "
+            "HQ does not place bets."
+        )
         lines.extend(f"- {r}" for r in status.reasons)
     return "\n".join(lines)
 
@@ -139,16 +144,23 @@ def validate_new_bet(
     stake: float,
     now: datetime,
     force: bool = False,
+    kind: str = "paper",
 ) -> SessionSnapshot:
     """Raise PlaybookViolation for hard rules.
 
-    Daily/seasonal stops are never bypassable (including ``--force``).
-    Session bet-count cap is hard unless ``force=True``.
+    Kill switch pause refuses every new ticket. Live tickets need both
+    validation gates (historical backtest + ~2–3 week paper confirm).
+    Daily/seasonal money stops apply to live only.
     """
     try:
+        kind = normalize_kind(kind)
         normalize_market(market)
     except ValueError as exc:
         raise PlaybookViolation(str(exc), "straights_only") from exc
+
+    desk = load_status(settings.data_dir)
+    if desk.paused:
+        raise PlaybookViolation(desk.pause_message(), "kill_switch")
 
     if store.open_bets_for_event(event_id):
         raise PlaybookViolation(
@@ -159,18 +171,44 @@ def validate_new_bet(
     snap = session_snapshot(store, settings, now)
     seasonal = seasonal_snapshot(store, settings, now)
 
-    if snap.realized_pnl <= settings.daily_stop:
-        raise PlaybookViolation(
-            f"Playbook: daily stop {settings.daily_stop:.0f} hit "
-            f"(realized ${snap.realized_pnl:+.2f}). New bets refused.",
-            "daily_stop",
-        )
-    if seasonal.realized_pnl <= settings.seasonal_stop:
-        raise PlaybookViolation(
-            f"Playbook: seasonal stop {settings.seasonal_stop:.0f} hit "
-            f"(realized ${seasonal.realized_pnl:+.2f}). New bets refused.",
-            "seasonal_stop",
-        )
+    if kind == "live":
+        gates = evaluate_gates(store, settings, now, season_start=seasonal.start)
+        if not gates.live_unlocked:
+            raise PlaybookViolation(
+                "Playbook: live tickets are locked until gate 1 (historical backtest) "
+                f"and gate 2 (current-season paper ~2–3 weeks) both clear. "
+                f"Backtest: {gates.backtest.detail} Paper: {gates.paper_confirm.detail} "
+                "Kill switch is unchanged.",
+                "live_locked",
+            )
+        if snap.realized_pnl <= settings.daily_stop:
+            raise PlaybookViolation(
+                f"Playbook: daily stop {settings.daily_stop:.0f} hit "
+                f"(realized ${snap.realized_pnl:+.2f}). New live bets refused.",
+                "daily_stop",
+            )
+        if seasonal.realized_pnl <= settings.seasonal_stop:
+            raise PlaybookViolation(
+                f"Playbook: seasonal stop {settings.seasonal_stop:.0f} hit "
+                f"(realized ${seasonal.realized_pnl:+.2f}). New live bets refused.",
+                "seasonal_stop",
+            )
+        worst_if_logged = snap.worst_case_pnl - stake
+        if worst_if_logged < settings.daily_stop:
+            raise PlaybookViolation(
+                f"Playbook: daily stop {settings.daily_stop:.0f} would be breached "
+                f"(worst-case P&L {worst_if_logged:.2f} including this ${stake:.0f} unit). "
+                "New live bets refused.",
+                "daily_stop",
+            )
+        seasonal_worst_if = seasonal.worst_case_pnl - stake
+        if seasonal_worst_if < settings.seasonal_stop:
+            raise PlaybookViolation(
+                f"Playbook: seasonal stop {settings.seasonal_stop:.0f} would be breached "
+                f"(worst-case P&L {seasonal_worst_if:.2f} including this ${stake:.0f} unit). "
+                "New live bets refused.",
+                "seasonal_stop",
+            )
 
     if not force and snap.bets_logged >= settings.max_bets_per_session:
         raise PlaybookViolation(
@@ -178,26 +216,5 @@ def validate_new_bet(
             f"({snap.bets_logged}). Use --force to override.",
             "session_cap",
         )
-
-    worst_if_logged = snap.worst_case_pnl - stake
-    if worst_if_logged < settings.daily_stop:
-        raise PlaybookViolation(
-            f"Playbook: daily stop {settings.daily_stop:.0f} would be breached "
-            f"(worst-case P&L {worst_if_logged:.2f} including this ${stake:.0f} unit). "
-            "New bets refused.",
-            "daily_stop",
-        )
-    seasonal_worst_if = seasonal.worst_case_pnl - stake
-    if seasonal_worst_if < settings.seasonal_stop:
-        raise PlaybookViolation(
-            f"Playbook: seasonal stop {settings.seasonal_stop:.0f} would be breached "
-            f"(worst-case P&L {seasonal_worst_if:.2f} including this ${stake:.0f} unit). "
-            "New bets refused.",
-            "seasonal_stop",
-        )
-
-    if abs(stake - settings.unit_stake) > 1e-9:
-        # Flat $25 units: allow with a note from the CLI, not a hard fail.
-        pass
 
     return snap

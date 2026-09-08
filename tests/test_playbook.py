@@ -70,7 +70,7 @@ def test_session_cap(store, settings) -> None:
     assert snap.bets_logged == 4
 
 
-def test_session_stop(store, settings) -> None:
+def test_session_stop_applies_to_live_only(store, settings) -> None:
     now = datetime.now(timezone.utc)
     store.insert_bet(
         _bet(
@@ -82,19 +82,18 @@ def test_session_stop(store, settings) -> None:
             logged_at=now,
         )
     )
+    snap = validate_new_bet(
+        store, settings, event_id="evt-2", market="ml", stake=25, now=now, kind="paper"
+    )
+    assert snap.bets_logged >= 1
     with pytest.raises(PlaybookViolation) as exc:
         validate_new_bet(
-            store, settings, event_id="evt-2", market="ml", stake=25, now=now
+            store, settings, event_id="evt-2", market="ml", stake=25, now=now, kind="live"
         )
-    assert exc.value.code == "daily_stop"
-    with pytest.raises(PlaybookViolation) as exc:
-        validate_new_bet(
-            store, settings, event_id="evt-2", market="ml", stake=25, now=now, force=True
-        )
-    assert exc.value.code == "daily_stop"
+    assert exc.value.code == "live_locked"
 
 
-def test_seasonal_stop_refuses_even_with_force(store, settings) -> None:
+def test_seasonal_stop_does_not_block_paper(store, settings) -> None:
     now = datetime.now(timezone.utc)
     settings.seasonal_stop = -50.0
     settings.season_start = "2020-01-01"
@@ -108,8 +107,19 @@ def test_seasonal_stop_refuses_even_with_force(store, settings) -> None:
             logged_at=now,
         )
     )
+    snap = validate_new_bet(
+        store, settings, event_id="evt-new", market="ml", stake=25, now=now, force=True, kind="paper"
+    )
+    assert snap.bets_logged >= 1
     with pytest.raises(PlaybookViolation) as exc:
         validate_new_bet(
-            store, settings, event_id="evt-new", market="ml", stake=25, now=now, force=True
+            store,
+            settings,
+            event_id="evt-new",
+            market="ml",
+            stake=25,
+            now=now,
+            force=True,
+            kind="live",
         )
-    assert exc.value.code == "seasonal_stop"
+    assert exc.value.code == "live_locked"

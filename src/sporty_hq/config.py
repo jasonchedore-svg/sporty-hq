@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     remind_min_minutes: int = 30
     remind_max_minutes: int = 60
     clv_judge_n: int = 100
+    backtest_min_n: int = 30
+    paper_confirm_days: int = 21  # ~3 weeks; set 14 for 2 weeks
+    paper_confirm_min_n: int = 12
     region: str = "on"
     timezone: str = "America/New_York"
     enable_slack: bool = False
@@ -104,6 +107,12 @@ class Settings(BaseSettings):
     @property
     def close_challenge_pack_path(self) -> Path:
         return self.data_dir / "close_challenge_pack.json"
+
+    def backtest_path(self) -> Path:
+        return self.data_dir / "backtest.json"
+
+    def desk_status_path(self) -> Path:
+        return self.data_dir / "desk_status.json"
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)

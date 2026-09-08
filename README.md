@@ -107,6 +107,47 @@ See `schemas/session.schema.json`. Runtime file: `data/session.json` (gitignored
 
 ---
 
+## Historical backtest (gate 1)
+
+CLV dashboard + paper `log-bet` are the scoreboard. **No live tickets** until this backtest (non-sample) and a ~2–3 week paper confirm both clear. Kill switch stays armed.
+
+OpticOdds archive audit was **owner-CLEARED 2026-09-08**. File checks still run on every backtest (coverage, timestamps, true close vs last-seen). HQ **does not invent closes**. OpticOdds SSE is realtime only — there is no historical pull in this CLI.
+
+End-to-end:
+
+```bash
+# 1) Standing owner flag (not a CLV number)
+sporty archive-audit --owner-cleared
+
+# 2) Audit a real OpticOdds archive export (CSV/JSON). Required columns:
+#    season,event_id,sport,event,market,selection,posted_odds,close_odds,
+#    posted_feed,posted_book,close_book,close_kind,posted_at,close_at,commence_at
+#    posted_feed=opticodds  posted_book=fanduel  close_book=pinnacle  close_kind=true_close
+sporty archive-audit --path /path/to/opticodds-archive.csv --seasons 1
+
+# 3) Grade vs closes (same CLV math as the dashboard). Logs assumptions + data sources.
+sporty backtest --path /path/to/opticodds-archive.csv --seasons 1
+# optional: --gaps fixtures/opticodds_archive_gaps.example.json
+# writes data/backtest.json and data/archive_audit.json
+# exit 0 only if avg CLV > 0, n ≥ min_n, feed parity, archive audit, and source is not a repo fixture
+
+# Will NOT invent numbers:
+sporty backtest --source opticodds          # fails: need OPTICODDS_API_KEY note + --path export
+sporty backtest                             # fails: --path required
+
+# Schema sample (cannot clear gate 1):
+sporty backtest --path fixtures/historical_closes.csv --seasons 1
+
+sporty clv-report            # paper CLV dashboard
+sporty log-bet ...           # paper default
+sporty log-bet --live        # trips kill switch A until both gates clear
+sporty desk-status
+```
+
+Feed parity: **OpticOdds posted / FanDuel take + Pinnacle close**. Pinnacle-only history cannot clear. Odds API is an optional REST stub, not this path.
+
+---
+
 ## Quick start
 
 Python **3.11+**.

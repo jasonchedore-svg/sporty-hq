@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/historical_close.schema.json",
+  "title": "Sporty HQ historical close row",
+  "description": "OpticOdds FanDuel posted vs Pinnacle true close. Same CLV math as the dashboard. Repo fixtures are SAMPLE and cannot clear gate 1.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "season",
+    "event_id",
+    "sport",
+    "event",
+    "market",
+    "selection",
+    "posted_odds",
+    "close_odds",
+    "posted_feed",
+    "posted_book",
+    "close_book",
+    "close_kind"
+  ],
+  "properties": {
+    "season": { "type": "string" },
+    "event_id": { "type": "string" },
+    "sport": { "type": "string" },
+    "event": { "type": "string" },
+    "market": { "type": "string" },
+    "selection": { "type": "string" },
+    "posted_odds": { "type": "integer" },
+    "close_odds": { "type": "integer" },
+    "posted_feed": { "type": "string", "description": "Must be opticodds" },
+    "posted_book": { "type": "string", "description": "Must be fanduel (live take)" },
+    "posted_feed": { "type": "string" },
+    "posted_book": { "type": "string" },
+    "close_book": { "type": "string" },
+    "close_kind": { "type": "string" },
+    "close_feed": { "type": "string", "description": "opticodds when close is on the same stream" },
+    "posted_at": { "type": "string", "description": "ISO-8601 posted/take time" },
+    "close_at": { "type": "string", "description": "ISO-8601 true close time" },
+    "commence_at": { "type": "string" },
+    "close_kind": {
+      "type": "string",
+      "description": "true_close | last_seen. last_seen cannot score."
+    },
+    "excluded": { "type": "boolean" },
+    "exclude_reason": { "type": "string" }
+  }
+}
