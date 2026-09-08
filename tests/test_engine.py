@@ -42,6 +42,17 @@ def test_csv_importer_scores() -> None:
     assert cands[0].edge_pct >= 3
 
 
+def test_pinnacle_sharp_benchmark_on_mlb() -> None:
+    quotes = quotes_from_json(DEMO_JSON, source="test")
+    cands = score_quotes(quotes, ScanConfig(min_edge=0.03))
+    yanks = next(c for c in cands if c.selection == "New York Yankees" and c.market == "ml")
+    assert yanks.pinnacle_odds == 138
+    assert yanks.pinnacle_fair is not None
+    assert "sharp benchmark" in yanks.rationale.lower()
+    assert "pinnacle" in yanks.rationale.lower()
+    assert "retail" in yanks.rationale.lower()
+
+
 def test_requires_consensus_book() -> None:
     quotes = [
         make_quote(book="fanduel", selection="New York Yankees", american_odds=150),

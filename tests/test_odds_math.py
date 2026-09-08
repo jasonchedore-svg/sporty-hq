@@ -6,6 +6,7 @@ from sporty_hq.odds_math import (
     implied_prob,
     juice_compare_to_win,
     juice_pct,
+    kelly_stake,
     multiplicative_devig,
     parse_american,
     risk_to_win,
@@ -87,3 +88,11 @@ def test_risk_to_win_100_juice_compare() -> None:
     assert risk_w == pytest.approx(71.43, abs=0.005)
     assert diff == pytest.approx(risk_w - risk_b, abs=0.001)
     assert diff > 0
+
+
+def test_kelly_stake_cap_and_zero_fraction() -> None:
+    dec = american_to_decimal(-110)
+    assert kelly_stake(0.55, dec, bankroll=10_000, fraction=0, unit=25, cap_units=1) == 25
+    capped = kelly_stake(0.55, dec, bankroll=10_000, fraction=1, unit=25, cap_units=1)
+    assert capped == 25
+    assert kelly_stake(0.40, dec, bankroll=10_000, fraction=0.25, unit=25, cap_units=1) == 0

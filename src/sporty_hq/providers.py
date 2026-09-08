@@ -159,7 +159,7 @@ class TheOddsApiProvider:
         self,
         api_key: str,
         sports: list[str] | None = None,
-        regions: str = "us,us2",
+        regions: str = "us,us2,eu",
         markets: str = "h2h,spreads,totals",
         timeout: float = 20.0,
     ) -> None:
@@ -173,6 +173,7 @@ class TheOddsApiProvider:
             "basketball_nba",
             "icehockey_nhl",
         ]
+        # Hypothesis: Pinnacle is on the Odds API EU region; us+us2+eu so sharp vs FD retail can land.
         self.regions = regions
         self.markets = markets
         self.timeout = timeout
@@ -203,7 +204,9 @@ def load_provider(kind: str, path: Path | None = None, api_key: str | None = Non
         return FixtureProvider(path)
     if kind in {"oddsapi", "theoddsapi", "the-odds-api"}:
         return TheOddsApiProvider(api_key=api_key or "")
-    raise ValueError(f"Unknown provider '{kind}' (use fixture or oddsapi)")
+    raise ValueError(
+        f"Unknown provider '{kind}' (use fixture, oddsapi, or sporty ingest --source stream)"
+    )
 
 
 def _optional_float(value: Any) -> float | None:

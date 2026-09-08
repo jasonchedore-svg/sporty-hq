@@ -238,3 +238,139 @@ def test_parlay_rejected(data_dir: Path) -> None:
         ],
     )
     assert r.exit_code != 0
+
+
+def test_ingest_stream_replay_and_degrade(data_dir: Path) -> None:
+    r = runner.invoke(
+        app,
+        [
+            "ingest",
+            "--source",
+            "stream",
+            "--replay",
+            str(DEMO_JSON),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "replay" in r.output.lower()
+
+    r = runner.invoke(app, ["ingest", "--source", "stream", "--data-dir", str(data_dir)])
+    assert r.exit_code == 0, r.output
+    assert "degrade" in r.output.lower()
+
+
+def test_settle_requires_close_odds_and_loss_postmortem(data_dir: Path) -> None:
+    r = runner.invoke(
+        app, ["ingest", "--source", "fixture", "--path", str(DEMO_JSON), "--data-dir", str(data_dir)]
+    )
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["scan", "--data-dir", str(data_dir)])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["log-bet", "--data-dir", str(data_dir), "--candidate-id", "1"])
+    assert r.exit_code == 0, r.output
+    store = Store(data_dir / "sporty.db")
+    bet_id = store.list_bets()[0].id
+
+    r = runner.invoke(app, ["settle", bet_id, "--result", "win", "--data-dir", str(data_dir)])
+    assert r.exit_code != 0
+
+    r = runner.invoke(
+        app,
+        ["settle", bet_id, "--result", "loss", "--close-odds", "+148", "--data-dir", str(data_dir)],
+    )
+    assert r.exit_code != 0
+    assert "postmortem" in r.output.lower()
+
+    r = runner.invoke(
+        app,
+        [
+            "settle",
+            bet_id,
+            "--result",
+            "loss",
+            "--close-odds",
+            "+148",
+            "--postmortem",
+            "injury_missed",
+            "--lesson",
+            "Cole IL not in the model",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    again = store.get_bet(bet_id)
+    assert again is not None
+    assert again.close_odds == 148
+    assert again.odds_at_bet is not None
+    assert again.clv_pct is not None
+    assert again.postmortem == "injury_missed"
+    lessons = store.list_lessons()
+    assert lessons and "Cole IL" in lessons[0].lesson
+
+
+def test_scan_respects_daily_stop(data_dir: Path) -> None:
+    from datetime import datetime, timezone
+
+    from sporty_hq.models import Bet
+
+    store = Store(data_dir / "sporty.db")
+    now = datetime.now(timezone.utc)
+    store.insert_bet(
+        Bet(
+            id="stoploss",
+            logged_at=now,
+            event_id="dead",
+            event_name="Stopped",
+            sport="baseball_mlb",
+            commence_at=now,
+            market="ml",
+            selection="X",
+            odds_at_bet=-110,
+            stake=25,
+            result="loss",
+            pnl=-100.0,
+            close_odds=-110,
+            clv_pct=0.0,
+        )
+    )
+    r = runner.invoke(
+        app, ["ingest", "--source", "fixture", "--path", str(DEMO_JSON), "--data-dir", str(data_dir)]
+    )
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["scan", "--data-dir", str(data_dir)])
+    assert r.exit_code == 1
+    assert "STOPPED" in r.output or "stop is hit" in r.output.lower()
+
+
+def test_clv_report_gate_failing(data_dir: Path) -> None:
+    from datetime import datetime, timezone
+
+    from sporty_hq.models import Bet
+
+    store = Store(data_dir / "sporty.db")
+    now = datetime.now(timezone.utc)
+    for i in range(100):
+        store.insert_bet(
+            Bet(
+                id=f"g{i:04d}",
+                logged_at=now,
+                event_id=f"e{i}",
+                event_name="NYY @ BOS",
+                sport="baseball_mlb",
+                commence_at=now,
+                market="ml",
+                selection="Yankees",
+                odds_at_bet=165,
+                stake=25,
+                result="loss",
+                pnl=-25,
+                close_odds=165,
+                clv_pct=0.0,
+            )
+        )
+    r = runner.invoke(app, ["clv-report", "--format", "json", "--gate", "--data-dir", str(data_dir)])
+    assert r.exit_code == 1
+    assert "FAILING" in r.output

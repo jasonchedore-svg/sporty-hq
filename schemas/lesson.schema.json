@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/lesson.schema.json",
+  "title": "Sporty HQ postmortem lesson",
+  "description": "Structured miss after settle/loss. Surfaced on similar markets/teams next slate. HQ never places bets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "postmortem",
+    "lesson",
+    "sport",
+    "event_id",
+    "event_name",
+    "market",
+    "selection"
+  ],
+  "properties": {
+    "id": { "type": ["integer", "null"] },
+    "bet_id": { "type": ["string", "null"] },
+    "created_at": { "type": ["string", "null"] },
+    "sport": { "type": "string" },
+    "event_id": { "type": "string" },
+    "event_name": { "type": "string" },
+    "market": { "type": "string" },
+    "selection": { "type": "string" },
+    "teams": { "type": "array", "items": { "type": "string" } },
+    "postmortem": {
+      "type": "string",
+      "enum": ["injury_missed", "weather_ignored", "steam_missed", "other"]
+    },
+    "lesson": { "type": "string" }
+  }
+}

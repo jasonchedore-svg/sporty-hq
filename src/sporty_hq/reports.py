@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from statistics import mean
 
 from sporty_hq import DISCLAIMER
@@ -12,6 +13,12 @@ from sporty_hq.models import Bet
 from sporty_hq.session import BET_LOG_COLUMNS, log_row
 
 CLV_JUDGE_N = 100
+
+
+class ModelHealth(str, Enum):
+    PASSING = "PASSING"
+    FAILING = "FAILING"
+    INSUFFICIENT_SAMPLE = "INSUFFICIENT_SAMPLE"
 
 
 @dataclass
@@ -30,6 +37,20 @@ class ClvSummary:
     clv_n: int
     units: float
     clv_ready: bool
+    health: str = ModelHealth.INSUFFICIENT_SAMPLE.value
+
+
+def model_health(avg_clv: float | None, clv_n: int, judge_n: int = CLV_JUDGE_N) -> ModelHealth:
+    """Primary process metric: average CLV.
+
+    FAILING if n >= judge_n and avg CLV <= 0 (flat close is 0).
+    Smaller samples are INSUFFICIENT_SAMPLE — directional only.
+    """
+    if clv_n < judge_n:
+        return ModelHealth.INSUFFICIENT_SAMPLE
+    if avg_clv is None or avg_clv <= 0:
+        return ModelHealth.FAILING
+    return ModelHealth.PASSING
 
 
 def summarize(bets: list[Bet], unit: float = 25.0, judge_n: int = CLV_JUDGE_N) -> ClvSummary:
@@ -43,6 +64,8 @@ def summarize(bets: list[Bet], unit: float = 25.0, judge_n: int = CLV_JUDGE_N) -
     total_pnl = round(sum(pnl_values), 2)
     total_stake = round(sum(b.stake for b in settled), 2)
     clvs = [b.clv_pct for b in settled if b.clv_pct is not None]
+    avg_clv = round(mean(clvs), 2) if clvs else None
+    health = model_health(avg_clv, len(clvs), judge_n)
     return ClvSummary(
         bets=len(bets),
         open_bets=len(open_bets),
@@ -54,10 +77,11 @@ def summarize(bets: list[Bet], unit: float = 25.0, judge_n: int = CLV_JUDGE_N) -
         total_stake=total_stake,
         total_pnl=total_pnl,
         roi=(total_pnl / total_stake) if total_stake else None,
-        avg_clv=round(mean(clvs), 2) if clvs else None,
+        avg_clv=avg_clv,
         clv_n=len(clvs),
         units=round(total_pnl / unit, 2) if unit else 0.0,
         clv_ready=len(clvs) >= judge_n,
+        health=health.value,
     )
 
 
@@ -82,11 +106,20 @@ def _fmt_money(value: float | None) -> str:
 
 
 def _clv_footnote(summary: ClvSummary, judge_n: int) -> str:
-    if summary.clv_n >= judge_n:
-        return f"CLV judged on n={summary.clv_n} (floor ~{judge_n}+)."
+    health = summary.health
+    if health == ModelHealth.FAILING.value:
+        return (
+            f"HEALTH {health}: n={summary.clv_n} (≥{judge_n}) and avg CLV "
+            f"{summary.avg_clv} ≤ 0. Model is FAILING — do not scale."
+        )
+    if health == ModelHealth.PASSING.value:
+        return (
+            f"HEALTH {health}: n={summary.clv_n} (≥{judge_n}) and avg CLV "
+            f"{summary.avg_clv} > 0. Primary metric is average CLV, not win rate."
+        )
     return (
-        f"CLV n={summary.clv_n} is below the ~{judge_n}+ sample to judge the process — "
-        "treat average CLV as directional only."
+        f"HEALTH {health}: CLV n={summary.clv_n} is below the ~{judge_n}+ sample "
+        "to judge the process — treat average CLV as directional only."
     )
 
 
@@ -126,7 +159,8 @@ def render_markdown(
             f"- Record: **{summary.wins}-{summary.losses}-{summary.pushes}** (win rate {wr})",
             f"- P&L: **${summary.total_pnl:+.2f}** ({summary.units:+.2f} u @ ${unit:.0f})",
             f"- ROI: **{roi}** on ${summary.total_stake:.2f} settled stake",
-            f"- Avg CLV: **{avg_clv}** (n={summary.clv_n})",
+            f"- Avg CLV: **{avg_clv}** (n={summary.clv_n}) — **primary health metric**",
+            f"- Model health: **{summary.health}**",
             f"- {_clv_footnote(summary, judge_n)}",
             "",
             "## Bet log",
@@ -253,6 +287,7 @@ def render_html(
     <div class="card"><span>P&amp;L</span><strong>${summary.total_pnl:+.2f}</strong></div>
     <div class="card"><span>ROI</span><strong>{roi}</strong></div>
     <div class="card"><span>Avg CLV</span><strong>{avg_clv}</strong></div>
+    <div class="card"><span>Health</span><strong>{summary.health}</strong></div>
     <div class="card"><span>Open</span><strong>{summary.open_bets}</strong></div>
   </div>
   <table>

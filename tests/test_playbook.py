@@ -49,13 +49,21 @@ def test_one_open_per_event(store, settings) -> None:
 def test_session_cap(store, settings) -> None:
     now = datetime.now(timezone.utc)
     for i in range(4):
-        store.insert_bet(_bet(f"evt-{i}", id=f"bet{i:04d}", logged_at=now))
+        store.insert_bet(
+            _bet(
+                f"evt-{i}",
+                id=f"bet{i:04d}",
+                logged_at=now,
+                result="win",
+                pnl=25.0,
+            )
+        )
     with pytest.raises(PlaybookViolation) as exc:
         validate_new_bet(
             store, settings, event_id="evt-new", market="spread", stake=25, now=now
         )
     assert exc.value.code == "session_cap"
-    # force bypasses cap
+    # force bypasses cap (stops are a different rule)
     snap = validate_new_bet(
         store, settings, event_id="evt-new", market="spread", stake=25, now=now, force=True
     )
@@ -78,4 +86,30 @@ def test_session_stop(store, settings) -> None:
         validate_new_bet(
             store, settings, event_id="evt-2", market="ml", stake=25, now=now
         )
-    assert exc.value.code == "session_stop"
+    assert exc.value.code == "daily_stop"
+    with pytest.raises(PlaybookViolation) as exc:
+        validate_new_bet(
+            store, settings, event_id="evt-2", market="ml", stake=25, now=now, force=True
+        )
+    assert exc.value.code == "daily_stop"
+
+
+def test_seasonal_stop_refuses_even_with_force(store, settings) -> None:
+    now = datetime.now(timezone.utc)
+    settings.seasonal_stop = -50.0
+    settings.season_start = "2020-01-01"
+    store.insert_bet(
+        _bet(
+            "evt-old",
+            id="oldloss1",
+            result="loss",
+            pnl=-50.0,
+            stake=25,
+            logged_at=now,
+        )
+    )
+    with pytest.raises(PlaybookViolation) as exc:
+        validate_new_bet(
+            store, settings, event_id="evt-new", market="ml", stake=25, now=now, force=True
+        )
+    assert exc.value.code == "seasonal_stop"

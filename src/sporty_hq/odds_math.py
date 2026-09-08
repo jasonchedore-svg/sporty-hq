@@ -115,6 +115,45 @@ def risk_to_win(american: int | float, win: float = 100.0) -> float:
     return round(win * abs(american) / 100.0, 2)
 
 
+def kelly_fraction_of_bankroll(fair_prob: float, decimal_odds: float) -> float:
+    """Full-Kelly fraction of bankroll for a binary price.
+
+    ``f* = (p * d - 1) / (d - 1)`` = edge / net-odds. Negative edge → 0.
+    """
+    if not 0.0 <= fair_prob <= 1.0:
+        raise ValueError("fair_prob must be in [0, 1]")
+    if decimal_odds <= 1.0:
+        raise ValueError("decimal_odds must be > 1")
+    net = decimal_odds - 1.0
+    full = (fair_prob * decimal_odds - 1.0) / net
+    return max(0.0, full)
+
+
+def kelly_stake(
+    fair_prob: float,
+    decimal_odds: float,
+    *,
+    bankroll: float,
+    fraction: float,
+    unit: float,
+    cap_units: float = 1.0,
+) -> float:
+    """Fractional Kelly stake, hard-capped at ``cap_units`` of the flat unit.
+
+    ``fraction=0`` (or disabled) returns the flat unit. Cap default is 1 unit.
+    """
+    if unit < 0:
+        raise ValueError("unit must be >= 0")
+    if cap_units < 0:
+        raise ValueError("cap_units must be >= 0")
+    cap = round(unit * cap_units, 2)
+    if fraction <= 0 or bankroll <= 0:
+        return round(unit, 2)
+    full = kelly_fraction_of_bankroll(fair_prob, decimal_odds)
+    raw = bankroll * fraction * full
+    return round(min(cap, max(0.0, raw)), 2)
+
+
 def juice_compare_to_win(
     price_a: int | float,
     price_b: int | float,

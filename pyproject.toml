@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sporty-hq"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid FanDuel research + alerts HQ (Ontario). No auto-betting."
 readme = "README.md"
 requires-python = ">=3.11"

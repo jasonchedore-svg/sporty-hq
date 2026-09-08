@@ -1,6 +1,6 @@
 """Sporty HQ: hybrid FanDuel research + alerts. Never places bets."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 DISCLAIMER = (
     "Sporty HQ is a research and logging tool, not gambling advice. "

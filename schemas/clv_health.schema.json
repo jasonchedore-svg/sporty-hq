@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sporty-hq.local/schemas/clv_health.schema.json",
+  "title": "Sporty HQ CLV health gate",
+  "description": "Average CLV is the primary process metric. FAILING if n>=judge_n and avg CLV <= 0. Flat close = 0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["health", "avg_clv", "clv_n", "judge_n"],
+  "properties": {
+    "health": {
+      "type": "string",
+      "enum": ["PASSING", "FAILING", "INSUFFICIENT_SAMPLE"]
+    },
+    "avg_clv": { "type": ["number", "null"] },
+    "clv_n": { "type": "integer", "minimum": 0 },
+    "judge_n": { "type": "integer", "const": 100 }
+  }
+}

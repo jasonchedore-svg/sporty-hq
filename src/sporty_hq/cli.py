@@ -21,15 +21,38 @@ from sporty_hq.brief import (
     render_markdown as render_brief_markdown,
     write_pack,
 )
+from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
-from sporty_hq.models import Alert, AlertType, Bet, Candidate, display_market, normalize_market
+from sporty_hq.lessons import apply_lessons
+from sporty_hq.models import (
+    POSTMORTEM_TAGS,
+    Alert,
+    AlertType,
+    Bet,
+    Candidate,
+    Lesson,
+    display_market,
+    normalize_market,
+    normalize_postmortem,
+)
 from sporty_hq.odds_math import clv_pct, parse_american, settle_pnl
-from sporty_hq.playbook import PlaybookViolation, session_snapshot, validate_new_bet
+from sporty_hq.playbook import (
+    PlaybookViolation,
+    format_stop_block,
+    session_snapshot,
+    stop_status,
+    validate_new_bet,
+)
 from sporty_hq.providers import load_provider
-from sporty_hq.reports import render_html, render_markdown, summarize
+from sporty_hq.reports import ModelHealth, render_html, render_markdown, summarize
 from sporty_hq.session import persist_live_session, read_session, session_row_to_bet
 from sporty_hq.storage import Store, utcnow
+from sporty_hq.streaming import (
+    StreamingUnavailable,
+    collect_stream_quotes,
+    load_stream_provider,
+)
 
 app = typer.Typer(
     name="sporty",
@@ -91,30 +114,35 @@ def version() -> None:
 
 @app.command()
 def ingest(
-    source: str = typer.Option("fixture", "--source", help="fixture | oddsapi"),
+    source: str = typer.Option(
+        "auto",
+        "--source",
+        help="auto | fixture | oddsapi | opticodds | stream",
+    ),
     path: Optional[Path] = typer.Option(None, "--path", help="JSON or CSV fixture path"),
+    replay: Optional[Path] = typer.Option(
+        None, "--replay", help="Replay a fixture as a push batch (stream stub / offline)"
+    ),
+    max_events: int = typer.Option(40, "--max-events", help="Cap quotes collected from a live SSE"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Load odds from a fixture file or The Odds API (key via env)."""
+    """Load odds. Live prefers OpticOdds SSE push; no key → fixture. Never scrapes in a loop."""
     settings = _settings(data_dir)
     store = _store(settings)
-    api_key = (
-        settings.the_odds_api_key.get_secret_value()
-        if settings.secret_configured("the_odds_api_key")
-        else None
+    quotes, provider_name, note = _ingest_quotes(
+        settings, source=source, path=path, replay=replay, max_events=max_events
     )
-    fixture_path = path or (DEFAULT_FIXTURE if source == "fixture" else None)
-    provider = load_provider(source, path=fixture_path, api_key=api_key)
-    quotes = provider.fetch_quotes()
     if not quotes:
         raise typer.BadParameter("Ingest produced 0 quotes")
     batch_id = _short_id()
-    store.insert_quotes(batch_id, provider.name, quotes)
+    store.insert_quotes(batch_id, provider_name, quotes)
     books = sorted({q.book for q in quotes})
     events = sorted({q.event_id for q in quotes})
+    console.print(note)
     console.print(
         f"Ingested [bold]{len(quotes)}[/bold] quotes "
-        f"({len(events)} events, books: {', '.join(books)}) batch={batch_id}"
+        f"({len(events)} events, books: {', '.join(books)}) batch={batch_id} "
+        f"via {provider_name}"
     )
     console.print(f"DB: {settings.db_path}")
 
@@ -127,18 +155,34 @@ def scan(
     json_out: bool = typer.Option(False, "--json", help="Print candidates as JSON"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Score latest ingest vs consensus; print ranked candidates ≥ min edge."""
+    """Score latest ingest vs consensus; print ranked candidates ≥ min edge.
+
+    Refuses to emit keepers when the daily or seasonal stop is already hit.
+    """
     settings = _settings(data_dir, min_edge)
     store = _store(settings)
+    now = utcnow()
+    stops = stop_status(store, settings, now)
+    console.print(format_stop_block(stops, settings))
+    if stops.hit:
+        console.print("Scan skipped — playbook stop is hit. HQ does not place bets.")
+        raise typer.Exit(1)
     batch_id = store.latest_batch_id()
     if not batch_id:
         raise typer.Exit("No odds ingested yet. Run: sporty ingest --source fixture")
     quotes = store.quotes_for_batch(batch_id)
     config = ScanConfig(
         target_book=book or settings.target_book,
+        sharp_book=settings.sharp_book,
         min_edge=settings.min_edge,
     )
     candidates = score_quotes(quotes, config)
+    apply_lessons(candidates, store.list_lessons())
+    if settings.kelly_fraction > 0:
+        for cand in candidates:
+            cand.suggested_stake = suggested_stake(
+                settings, fair_prob=cand.fair_prob, decimal_odds=cand.decimal_odds
+            )
     stored = store.replace_candidates(batch_id, candidates)
     _write_scan_markdown(settings, stored)
     if json_out:
@@ -171,7 +215,8 @@ def log_bet(
     edge_note: str = typer.Option("", "--edge-note", "--notes", help="Edge note column"),
     sport: str = typer.Option("", "--sport"),
     point: Optional[float] = typer.Option(None, "--point"),
-    force: bool = typer.Option(False, "--force", help="Override session cap / stop"),
+    force: bool = typer.Option(False, "--force", help="Override session cap (not daily/seasonal stops)"),
+    kelly: bool = typer.Option(False, "--kelly", help="Fractional Kelly size, capped at 1 unit unless configured"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
     """Append a bet you placed on mobile. HQ never places it for you."""
@@ -199,7 +244,24 @@ def log_bet(
         american = cand.american_odds
     else:
         raise typer.BadParameter("--odds is required unless --candidate-id is set")
-    stake_v = settings.unit_stake if stake is None else stake
+    if stake is not None:
+        stake_v = stake
+    elif kelly or settings.kelly_fraction > 0:
+        if cand is None:
+            raise typer.BadParameter("--kelly needs --candidate-id (fair_prob / decimal)")
+        stake_v = suggested_stake(
+            settings,
+            fair_prob=cand.fair_prob,
+            decimal_odds=cand.decimal_odds,
+            kelly=kelly,
+        )
+        console.print(
+            f"Kelly suggestion ${stake_v:.2f} (unit ${settings.unit_stake:.0f}, "
+            f"cap {settings.kelly_cap_units:g}u, fraction "
+            f"{settings.kelly_fraction or 0.25:g}). HQ does not place bets."
+        )
+    else:
+        stake_v = settings.unit_stake
     try:
         validate_new_bet(
             store,
@@ -241,7 +303,8 @@ def log_bet(
     console.print(
         f"Session {snap.start.date()}: {snap.bets_logged}/{settings.max_bets_per_session} bets, "
         f"realized ${snap.realized_pnl:+.2f}, open risk ${snap.open_risk:.0f}, "
-        f"worst-case ${snap.worst_case_pnl:+.2f} (stop {settings.session_stop:.0f})"
+        f"worst-case ${snap.worst_case_pnl:+.2f} (daily stop {settings.daily_stop:.0f}, "
+        f"seasonal {settings.seasonal_stop:.0f})"
     )
 
 
@@ -249,33 +312,74 @@ def log_bet(
 def settle(
     bet_id: str = typer.Argument(..., help="Bet id from log-bet"),
     result: str = typer.Option(..., "--result", help="win | loss | push | void"),
-    close_odds: Optional[str] = typer.Option(None, "--close-odds", help="American close, e.g. +145"),
+    close_odds: str = typer.Option(..., "--close-odds", help="American close (required), e.g. +145"),
     notes: Optional[str] = typer.Option(None, "--edge-note", "--notes"),
+    postmortem: Optional[str] = typer.Option(
+        None,
+        "--postmortem",
+        help="Required on loss: injury_missed | weather_ignored | steam_missed | other",
+    ),
+    lesson: Optional[str] = typer.Option(None, "--lesson", help="Free-text lesson persisted for later scans"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Settle a logged bet and compute P&L + CLV vs close."""
+    """Settle a logged bet. Close line is required; CLV is computed (flat=0). HQ never fills."""
     settings = _settings(data_dir)
     store = _store(settings)
     bet = store.get_bet(bet_id)
     if bet is None:
         raise typer.Exit(f"Unknown bet id {bet_id}")
+    kind = result.strip().lower()
     try:
-        bet.pnl = settle_pnl(result, bet.stake, bet.odds_at_bet)
+        bet.pnl = settle_pnl(kind, bet.stake, bet.odds_at_bet)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    bet.result = result.strip().lower()
-    if close_odds is not None:
-        bet.close_odds = parse_american(close_odds)
-        bet.clv_pct = round(clv_pct(bet.odds_at_bet, bet.close_odds), 2)
+    bet.result = kind
+    bet.close_odds = parse_american(close_odds)
+    bet.clv_pct = round(clv_pct(bet.odds_at_bet, bet.close_odds), 2)
     bet.settled_at = utcnow()
     if notes:
         bet.edge_note = (bet.edge_note + " | " if bet.edge_note else "") + notes
+    tag: str | None = None
+    if kind == "loss":
+        if not postmortem:
+            raise typer.BadParameter(
+                "Loss requires --postmortem "
+                f"({', '.join(sorted(POSTMORTEM_TAGS))}) and preferably --lesson."
+            )
+        try:
+            tag = normalize_postmortem(postmortem)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    elif postmortem:
+        try:
+            tag = normalize_postmortem(postmortem)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    bet.postmortem = tag
+    bet.lesson = (lesson or "").strip()
     store.update_bet(bet)
+    if tag:
+        from sporty_hq.lessons import teams_from_event
+
+        store.insert_lesson(
+            Lesson(
+                sport=bet.sport,
+                event_id=bet.event_id,
+                event_name=bet.event_name,
+                market=bet.market,
+                selection=bet.selection,
+                postmortem=tag,
+                lesson=bet.lesson,
+                teams=teams_from_event(bet.event_name, bet.selection),
+                bet_id=bet.id,
+            )
+        )
     _sync_session(settings, store)
-    clv_txt = "0" if bet.clv_pct == 0 else ("—" if bet.clv_pct is None else f"{bet.clv_pct:+.2f}%")
+    clv_txt = "0" if bet.clv_pct == 0 else f"{bet.clv_pct:+.2f}%"
+    extra = f" postmortem={tag}" if tag else ""
     console.print(
         f"Settled {bet.id} {bet.result} pnl ${bet.pnl:+.2f} CLV {clv_txt} "
-        f"(bet {_fmt_odds(bet.odds_at_bet)} close {_fmt_odds(bet.close_odds)})"
+        f"(bet {_fmt_odds(bet.odds_at_bet)} close {_fmt_odds(bet.close_odds)}){extra}"
     )
 
 
@@ -283,19 +387,24 @@ def settle(
 def clv_report(
     fmt: str = typer.Option("md", "--format", help="md | html | json"),
     out: Optional[Path] = typer.Option(None, "--out", help="Write file instead of stdout"),
+    gate: bool = typer.Option(
+        False,
+        "--gate",
+        help="Exit 1 if model health is FAILING (n>=100 and avg CLV <= 0)",
+    ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Cumulative CLV, win rate, and P&L dashboard."""
+    """Cumulative CLV dashboard. Average CLV is the primary health metric."""
     settings = _settings(data_dir)
     store = _store(settings)
     bets = store.list_bets()
+    summary = summarize(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
     kind = fmt.strip().lower()
     if kind in {"md", "markdown"}:
         text = render_markdown(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
     elif kind == "html":
         text = render_html(bets, settings.unit_stake, judge_n=settings.clv_judge_n)
     elif kind == "json":
-        summary = summarize(bets, settings.unit_stake)
         text = json.dumps(
             {"summary": summary.__dict__, "bets": [b.to_row() for b in bets]},
             indent=2,
@@ -309,6 +418,9 @@ def clv_report(
         console.print(f"Wrote {out}")
     else:
         console.print(text)
+    console.print(f"Model health: {summary.health} (avg CLV n={summary.clv_n})")
+    if gate and summary.health == ModelHealth.FAILING.value:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -466,7 +578,11 @@ def demo(
     store.insert_quotes(batch_id, provider.name, quotes)
     candidates = score_quotes(
         quotes,
-        ScanConfig(target_book=settings.target_book, min_edge=settings.min_edge),
+        ScanConfig(
+            target_book=settings.target_book,
+            sharp_book=settings.sharp_book,
+            min_edge=settings.min_edge,
+        ),
     )
     stored = store.replace_candidates(batch_id, candidates)
     _write_scan_markdown(settings, stored)
@@ -497,6 +613,83 @@ def demo(
     console.print(f"Wrote {report_path}, {html_path}, and {dest}")
     console.print("Hybrid: research/alerts only — never fake fills or place FanDuel bets.")
     console.print(DISCLAIMER)
+
+
+def _ingest_quotes(
+    settings: Settings,
+    *,
+    source: str,
+    path: Optional[Path],
+    replay: Optional[Path],
+    max_events: int,
+) -> tuple[list, str, str]:
+    """Return quotes, provider name, and a user-facing note (never includes keys)."""
+    kind = source.strip().lower()
+    odds_key = (
+        settings.the_odds_api_key.get_secret_value()
+        if settings.secret_configured("the_odds_api_key")
+        else None
+    )
+    optic_key = (
+        settings.opticodds_api_key.get_secret_value()
+        if settings.secret_configured("opticodds_api_key")
+        else None
+    )
+    fixture_path = path or DEFAULT_FIXTURE
+    if kind == "auto":
+        if replay is not None or optic_key:
+            kind = "stream"
+        elif odds_key:
+            kind = "oddsapi"
+        else:
+            kind = "fixture"
+
+    if kind in {"fixture", "json", "csv", "file"}:
+        provider = load_provider("fixture", path=fixture_path)
+        return provider.fetch_quotes(), provider.name, "fixture ingest (offline/dev)"
+
+    if kind in {"oddsapi", "theoddsapi", "the-odds-api"}:
+        if not odds_key:
+            provider = load_provider("fixture", path=fixture_path)
+            return (
+                provider.fetch_quotes(),
+                provider.name,
+                "degrade: THE_ODDS_API_KEY unset — fixture ingest.",
+            )
+        provider = load_provider("oddsapi", api_key=odds_key)
+        return (
+            provider.fetch_quotes(),
+            provider.name,
+            "The Odds API REST snapshot (no public WebSocket; not a poll loop).",
+        )
+
+    if kind in {"stream", "opticodds", "sse"}:
+        provider, note = load_stream_provider(
+            opticodds_key=optic_key,
+            odds_api_key=odds_key if kind == "stream" else None,
+            replay_path=replay,
+            fixture_fallback=fixture_path,
+        )
+        try:
+            quotes = collect_stream_quotes(provider, max_events=max_events)
+            return quotes, provider.name, note
+        except StreamingUnavailable:
+            if odds_key:
+                rest = load_provider("oddsapi", api_key=odds_key)
+                return (
+                    rest.fetch_quotes(),
+                    rest.name,
+                    "The Odds API has no WebSocket — single REST snapshot, then stop. "
+                    "Prefer OpticOdds SSE when keyed.",
+                )
+            fallback = load_provider("fixture", path=fixture_path)
+            return (
+                fallback.fetch_quotes(),
+                fallback.name,
+                "degrade: no streaming key — fixture ingest.",
+            )
+
+    raise typer.BadParameter("source must be auto, fixture, oddsapi, opticodds, or stream")
 
 
 def _brief_quotes(
@@ -625,7 +818,8 @@ def _settle_reminders(store: Store, bus: AlertBus, now: datetime) -> int:
             title=f"Settle reminder: {bet.event_name}",
             body=(
                 f"Open ticket {bet.id} {bet.selection} {_fmt_odds(bet.odds_at_bet)} "
-                f"has commenced. Run: sporty settle {bet.id} --result win|loss|push --close-odds …"
+                f"has commenced. Run: sporty settle {bet.id} --result win|loss|push "
+                "--close-odds … [--postmortem … --lesson …]"
             ),
             dedup_key=f"settle:{bet.id}",
             payload={"bet_id": bet.id, "event_id": bet.event_id},
