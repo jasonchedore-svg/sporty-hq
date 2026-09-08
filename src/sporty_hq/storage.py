@@ -181,6 +181,18 @@ class Store:
             ).fetchall()
         return [_quote_from_row(row) for row in rows]
 
+    def quotes_chronological(self) -> list[tuple[datetime, Quote]]:
+        """All ingested quotes oldest-first, with batch ingest time (for open vs current)."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM quotes ORDER BY ingested_at ASC, id ASC"
+            ).fetchall()
+        out: list[tuple[datetime, Quote]] = []
+        for row in rows:
+            ingested = parse_dt(row["ingested_at"]) or utcnow()
+            out.append((ingested, _quote_from_row(row)))
+        return out
+
     def replace_candidates(self, batch_id: str | None, candidates: list[Candidate]) -> list[Candidate]:
         scanned_at = utcnow()
         with self.connect() as conn:

@@ -98,3 +98,36 @@ def settle_pnl(result: str, stake: float, american_odds: int) -> float:
     if kind in {"push", "void"}:
         return 0.0
     raise ValueError(f"Unknown result '{result}' (use win, loss, push, void)")
+
+
+def risk_to_win(american: int | float, win: float = 100.0) -> float:
+    """Stake required to profit ``win`` dollars at American odds.
+
+    Education helper (juice explainer): -110 → 110.0 to win 100; +150 → 66.67.
+    """
+    american = int(american)
+    if american == 0:
+        raise ValueError("American odds cannot be 0")
+    if win < 0:
+        raise ValueError("win must be >= 0")
+    if american > 0:
+        return round(win * 100.0 / american, 2)
+    return round(win * abs(american) / 100.0, 2)
+
+
+def juice_compare_to_win(
+    price_a: int | float,
+    price_b: int | float,
+    win: float = 100.0,
+) -> tuple[int, int, float, float, float]:
+    """Compare two American prices by risk to win ``win``.
+
+    Returns ``(better_price, worse_price, risk_better, risk_worse, diff_usd)``.
+    Higher American number is the better price (-110 beats -120; +165 beats +140).
+    ``diff_usd`` is extra stake at the worse number (always ≥ 0).
+    """
+    a, b = int(price_a), int(price_b)
+    better, worse = (a, b) if a >= b else (b, a)
+    risk_better = risk_to_win(better, win)
+    risk_worse = risk_to_win(worse, win)
+    return better, worse, risk_better, risk_worse, round(risk_worse - risk_better, 2)

@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     def session_path(self) -> Path:
         return self.data_dir / "session.json"
 
+    @property
+    def close_challenge_pack_path(self) -> Path:
+        return self.data_dir / "close_challenge_pack.json"
+
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir
