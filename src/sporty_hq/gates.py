@@ -1,10 +1,10 @@
-"""Validation gates for live unlock. Does not weaken the owner kill switch.
+"""Validation gates. Paper trade only — live stays locked. Kill switch unchanged.
 
-0) OpticOdds archive audit (hard stop: coverage, timestamps, true close vs last-seen).
-1) Historical backtest vs prior-season closes (1–3 seasons) — beat the close.
-2) Current-season paper for ~2–3 weeks (not a full 17-week slate).
-3) Live only after both. Kill switch still trips on (A) flagged pre-gate action
-   or (B) n≥100 paper with non-positive avg CLV.
+0) Archive audit (hard stop: coverage, timestamps, true close vs last-seen).
+1) Historical backtest vs cheaper-feed closes (Odds API / SportsGameOdds) — beat the close.
+2) Current-season paper for ~2–3 weeks. Avg CLV must stay > 0.
+Live tickets stay refused. Kill switch still trips on (A) flagged pre-gate / live
+attempt or (B) n≥100 paper with non-positive avg CLV.
 """
 
 from __future__ import annotations
@@ -63,7 +63,8 @@ def evaluate_gates(
         season_start = season_start_et(now, settings.timezone, settings.season_start)
     bt = _backtest_gate(settings)
     paper = _paper_confirm_gate(store.list_bets(), settings, now, since=season_start)
-    live = bt.cleared and paper.cleared and not desk.paused
+    # Paper-only protocol: gates still score CLV; live never unlocks.
+    live = False
     return ValidationGates(
         backtest=bt,
         paper_confirm=paper,
@@ -83,8 +84,9 @@ def _backtest_gate(settings: Settings) -> GateResult:
             n=0,
             avg_clv=None,
             detail=(
-                "No backtest.json — run sporty backtest with 1–3 seasons of "
-                f"{LIVE_FEED_ID} historical closes (OpticOdds posted + Pinnacle close)."
+                "No backtest.json — run sporty backtest --source oddsapi (THE_ODDS_API_KEY) "
+                "or --path to an Odds API / SportsGameOdds export. OpticOdds is not required "
+                "and will not be invented."
             ),
         )
     cleared = bool(
@@ -104,7 +106,7 @@ def _backtest_gate(settings: Settings) -> GateResult:
     elif not stored.feed_parity:
         detail = (
             stored.feed_detail
-            or "Feed parity failed — backtest feed is not the live OpticOdds+Pinnacle path."
+            or "Feed parity failed — backtest feed is not Odds API / SportsGameOdds + FanDuel."
         ) + (f" {stored.note}" if stored.note else "")
     return GateResult(
         name="backtest",

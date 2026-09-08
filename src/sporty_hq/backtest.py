@@ -54,6 +54,7 @@ REQUIRED_ASSUMPTION_IDS = (
     "sample_size",
     "archive_audit",
     "sample",
+    "paper_only",
     "caveat",
     "no_live",
 )
@@ -67,7 +68,11 @@ REQUIRED_DATA_SOURCE_IDS = (
     "filters",
     "sample_size",
     "close_kind",
+    "pinnacle_close",
+    "coverage_cost",
     "odds_api",
+    "sportsgameodds",
+    "opticodds",
     "live_stream",
     "scan_engine",
     "invented_closes",
@@ -86,7 +91,7 @@ class HistoricalClose:
     close_odds: int
     posted_feed: str = ""
     posted_book: str = ""
-    close_book: str = LIVE_SHARP_BOOK
+    close_book: str = ""
     close_feed: str = ""
     posted_at: str = ""
     close_at: str = ""
@@ -117,6 +122,8 @@ class BacktestResult:
     archive_audit_passed: bool = False
     archive_audit_detail: str = ""
     sample: bool = False
+    pinnacle_close: bool = False
+    liabilities: list[str] = field(default_factory=list)
     assumptions: list[dict[str, str]] = field(default_factory=list)
     data_sources: list[dict[str, str]] = field(default_factory=list)
 
@@ -149,6 +156,8 @@ class BacktestResult:
             archive_audit_passed=archive_ok,
             archive_audit_detail=str(data.get("archive_audit_detail") or ""),
             sample=sample,
+            pinnacle_close=bool(data.get("pinnacle_close")),
+            liabilities=list(data.get("liabilities") or []),
             assumptions=list(data.get("assumptions") or []),
             data_sources=list(data.get("data_sources") or []),
         )
@@ -223,17 +232,19 @@ def assumption_log(
         {
             "id": "feed_parity",
             "statement": (
-                f"Live path is {LIVE_FEED_ID}: posted_feed=opticodds, posted_book=fanduel, "
-                "close_book=pinnacle. Pinnacle-only or Odds API history cannot clear. "
+                f"Payable path is {LIVE_FEED_ID}: posted_feed=oddsapi|sportsgameodds, "
+                "posted_book=fanduel. Pinnacle close is used only if the provider exposes it. "
+                "OpticOdds is not required and cannot clear. "
                 f"{describe_live_feed()}"
             ),
         },
         {
             "id": "close_definition",
             "statement": (
-                "Close must be close_kind=true_close (official/pregame close), not last_seen "
-                "or a stale snapshot. Pinnacle on the OpticOdds archive is the close/benchmark; "
-                "FanDuel on OpticOdds is the posted/take."
+                "Close must be close_kind=true_close (pregame close on this feed), not last_seen "
+                "junk. Preferred close_book=pinnacle when the cheaper feed actually has Pinnacle. "
+                "If it does not, CLV uses the provider close and a KNOWN LIABILITY is logged. "
+                "HQ never invents Pinnacle prices."
             ),
         },
         {
@@ -280,26 +291,34 @@ def assumption_log(
             "id": "sample",
             "statement": (
                 "Repo fixtures are SAMPLE schema only and cannot clear gate 1. "
-                "HQ will not invent OpticOdds closes if a key or archive export is missing."
+                "HQ will not invent Odds API, SportsGameOdds, Pinnacle, or OpticOdds closes "
+                "if a key or archive export is missing."
                 if sample
-                else "Source is an operator-supplied archive export, not a repo fixture."
+                else "Source is an operator-supplied cheap-feed archive or live historical pull, not a repo fixture."
+            ),
+        },
+        {
+            "id": "paper_only",
+            "statement": (
+                "Paper trade only. Gate 1 measures cheap-feed CLV. It does not unlock live "
+                "tickets. log-bet --live stays refused and still trips kill switch A."
             ),
         },
         {
             "id": "caveat",
             "statement": (
                 "CAVEAT: a passing historical backtest only shows would-have-beaten-the-close "
-                "on that prior-season sample. Backtest ≠ will work again. Gate 2 "
-                "(current-season paper ~2–3 weeks, avg CLV > 0) is required before any "
-                "live consideration. Kill switch is unchanged."
+                "on that cheaper-feed sample. Backtest ≠ will work again. Expect thinner edge "
+                "and more missing history than an enterprise OpticOdds archive. Gate 2 "
+                "(current-season paper ~2–3 weeks, avg CLV > 0) is still the paper confirm. "
+                "Kill switch is unchanged. No live tickets."
             ),
         },
         {
             "id": "no_live",
             "statement": (
                 "This command does not place bets, does not unlock live logging, and does not "
-                "bypass the kill switch. Live stays locked until gate 1 (this file, non-sample) "
-                "and gate 2 (~2–3 week paper) both clear."
+                "bypass the kill switch. This protocol is paper-only."
             ),
         },
     ]
@@ -333,14 +352,14 @@ def data_source_log(
             "id": "posted_feed",
             "statement": (
                 f"Posted/take feed+book: {list(parity.posted_feeds)} / {list(parity.posted_books)}. "
-                "Required: opticodds / fanduel."
+                "Required: oddsapi|sportsgameodds / fanduel."
             ),
         },
         {
             "id": "close_feed",
             "statement": (
                 f"Close/benchmark: {list(parity.close_feeds)} / {list(parity.close_books)}. "
-                "Required: opticodds stream + pinnacle close."
+                "Pinnacle if the provider exposed it; otherwise provider close + liability."
             ),
         },
         {
@@ -379,14 +398,45 @@ def data_source_log(
             "statement": f"close_kind values in lookback: {kinds}. Only true_close may score.",
         },
         {
+            "id": "pinnacle_close",
+            "statement": (
+                "Pinnacle close present."
+                if getattr(parity, "pinnacle_close", False)
+                else "Pinnacle close NOT present — KNOWN LIABILITY; not invented."
+            ),
+        },
+        {
+            "id": "coverage_cost",
+            "statement": (
+                "Cheap-feed history is thinner (Odds API scores daysFrom≤3 unless you pass "
+                "an export; SGO historical needs a higher plan). Missing rows stay missing."
+            ),
+        },
+        {
             "id": "odds_api",
-            "statement": "The Odds API REST stub is not a data source for this backtest.",
+            "statement": (
+                "The Odds API is a payable source for this backtest when posted_feed=oddsapi "
+                "or --source oddsapi with THE_ODDS_API_KEY."
+            ),
+        },
+        {
+            "id": "sportsgameodds",
+            "statement": (
+                "SportsGameOdds is a payable source when posted_feed=sportsgameodds or "
+                "--source sportsgameodds with SPORTSGAMEODDS_API_KEY."
+            ),
+        },
+        {
+            "id": "opticodds",
+            "statement": (
+                "OpticOdds was not used and was not invented. It is not the payable path."
+            ),
         },
         {
             "id": "live_stream",
             "statement": (
-                "OpticOdds WS/SSE was not queried. Realtime has no historical closes. "
-                "This number comes only from the archive file above."
+                "No OpticOdds WS/SSE historical pull. This number comes from the Odds API / "
+                "SportsGameOdds archive or historical REST above."
             ),
         },
         {
@@ -430,6 +480,7 @@ def render_backtest_markdown(result: BacktestResult) -> str:
         f"- feed_parity: **{result.feed_parity}** (`{result.feed_id or result.live_feed_id}`)",
         f"- archive_audit: **{result.archive_audit_passed}**",
         f"- sample: **{result.sample}**",
+        f"- pinnacle_close: **{result.pinnacle_close}**",
         f"- source: `{result.source or '—'}`",
         f"- as of: {result.as_of or '—'}",
         f"- note: {result.note or '—'}",
@@ -474,8 +525,21 @@ def render_backtest_markdown(result: BacktestResult) -> str:
             "",
             "## Feed parity",
             "",
-            f"- Live path required: **{result.live_feed_id}** (OpticOdds FanDuel posted + Pinnacle close)",
+            f"- Payable path: **{result.live_feed_id}** (Odds API or SportsGameOdds, FanDuel take, Pinnacle optional)",
+            f"- Pinnacle close: **{result.pinnacle_close}**",
             f"- This file: **{result.feed_detail or '—'}**",
+            "",
+            "## Known liabilities",
+            "",
+        ]
+    )
+    liabilities = list(result.liabilities or [])
+    if liabilities:
+        lines.extend(f"- {item}" for item in liabilities)
+    else:
+        lines.append("- None logged.")
+    lines.extend(
+        [
             "",
             "## Archive audit (gate 0)",
             "",
@@ -485,8 +549,8 @@ def render_backtest_markdown(result: BacktestResult) -> str:
             "## Live / kill switch",
             "",
             "This report does not place bets and does not unlock `log-bet --live`. "
-            "Kill switch A (acted before gates) and B (paper avg CLV ≤ 0 at n≥100) are unchanged. "
-            "Resume still requires a written review artifact.",
+            "Paper trade only. Kill switch A (acted before gates / live attempt) and B "
+            "(paper avg CLV ≤ 0 at n≥100) are unchanged. Resume still requires a written review.",
             "",
             "**CAVEAT: backtest ≠ will work again.**",
             "",
@@ -618,6 +682,8 @@ def run_backtest(
             archive_audit_passed=False,
             archive_audit_detail=audit.detail,
             sample=sample,
+            pinnacle_close=False,
+            liabilities=list(getattr(evaluate_feed_parity([]), "liabilities", ()) or []),
             assumptions=assumptions,
             data_sources=sources,
         )
@@ -657,6 +723,8 @@ def run_backtest(
         blockers.append(clv_note)
     cleared = bool(clv_ok and parity.matched and audit.passed and not sample)
     note = clv_note if cleared else " ".join(blockers) or clv_note
+    if not parity.pinnacle_close:
+        note = (note + " " if note else "") + "KNOWN LIABILITY: no Pinnacle close on this cheaper feed."
     per_season = _group_clv(scored, lambda r: r.season)
     per_market = _group_clv(scored, lambda r: r.market)
     per_sport = _group_clv(scored, lambda r: family(r.sport) if family(r.sport) != "skip" else r.sport)
@@ -681,6 +749,8 @@ def run_backtest(
         archive_audit_passed=audit.passed,
         archive_audit_detail=audit.detail,
         sample=sample,
+        pinnacle_close=parity.pinnacle_close,
+        liabilities=list(parity.liabilities),
         assumptions=assumptions,
         data_sources=sources,
     )
@@ -729,7 +799,7 @@ def _truthy(value: Any) -> bool:
 def _row(raw: dict[str, Any]) -> HistoricalClose:
     posted_feed = str(raw.get("posted_feed") or raw.get("feed") or "").strip()
     posted_book = str(raw.get("posted_book") or "").strip()
-    close_book = str(raw.get("close_book") or LIVE_SHARP_BOOK).strip()
+    close_book = str(raw.get("close_book") or "").strip()
     close_feed = str(raw.get("close_feed") or "").strip()
     return HistoricalClose(
         season=str(raw.get("season") or "").strip(),
@@ -742,7 +812,7 @@ def _row(raw: dict[str, Any]) -> HistoricalClose:
         close_odds=parse_american(raw.get("close_odds")),
         posted_feed=posted_feed.lower(),
         posted_book=posted_book.lower(),
-        close_book=close_book.lower() or LIVE_SHARP_BOOK,
+        close_book=close_book.lower(),
         close_feed=close_feed.lower(),
         posted_at=str(raw.get("posted_at") or "").strip(),
         close_at=str(raw.get("close_at") or "").strip(),

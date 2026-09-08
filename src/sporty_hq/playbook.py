@@ -175,8 +175,8 @@ def validate_new_bet(
         gates = evaluate_gates(store, settings, now, season_start=seasonal.start)
         if not gates.live_unlocked:
             raise PlaybookViolation(
-                "Playbook: live tickets are locked until gate 1 (historical backtest) "
-                f"and gate 2 (current-season paper ~2–3 weeks) both clear. "
+                "Playbook: paper-only protocol. Live tickets stay locked. "
+                "Gate 1 is cheap-feed CLV (Odds API / SportsGameOdds). "
                 f"Backtest: {gates.backtest.detail} Paper: {gates.paper_confirm.detail} "
                 "Kill switch is unchanged.",
                 "live_locked",

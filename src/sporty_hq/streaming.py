@@ -1,13 +1,7 @@
-"""Push-first odds ingest: OpticOdds realtime first, Odds API optional stub.
+"""Leftover OpticOdds push ingest (explicit --source opticodds / stream replay).
 
-Owner feed lock: **OpticOdds realtime (WebSocket first)** with **Pinnacle**
-as the sharp benchmark on the same stream. The Odds API is an optional REST
-fallback only — never preferred when an OpticOdds key is present.
-
-Fact (OpticOdds FAQ, 2026): they do **not** offer webhooks or WebSockets; the
-documented realtime product is SSE ``GET /api/v3/stream/odds/{sport}``.
-HQ still **attempts WebSocket first** (owner lock), then falls back to SSE.
-Keys stay in env / ``SecretStr`` — never logged, never committed.
+Payable live + backtest path is The Odds API / SportsGameOdds. This module is
+not required for gate 1 and must not invent historical OpticOdds closes.
 """
 
 from __future__ import annotations
@@ -400,8 +394,8 @@ class TheOddsApiWebsocketStub:
     def fetch_quotes(self) -> list[Quote]:
         raise StreamingUnavailable(
             "The Odds API has no public WebSocket (REST polling only as of 2026). "
-            "Use --source oddsapi for a single REST snapshot, --source opticodds for "
-            "SSE push, or fixture if no key. HQ never scrapes in a loop."
+            "Use --source oddsapi for a REST snapshot. OpticOdds is not the payable path. "
+            "HQ never scrapes in a loop."
         )
 
     def iter_quote_batches(self) -> Iterator[list[Quote]]:
@@ -429,30 +423,25 @@ def load_stream_provider(
     replay_path: Path | None,
     fixture_fallback: Path | None,
 ) -> tuple[StreamProvider, str]:
-    """Prefer OpticOdds realtime (WS first, SSE fallback). Odds API is not this path.
-
-    Returns ``(provider, note)``. Note is printed by the CLI (no secrets).
-    """
+    """Explicit OpticOdds leftover. Payable path is Odds API / SportsGameOdds REST."""
     if replay_path is not None:
         return FixtureReplayProvider(replay_path), "replay: fixture as push batch (offline/dev)"
     if opticodds_key:
         return (
             OpticOddsRealtimeProvider(opticodds_key),
-            "live: OpticOdds realtime — WebSocket first, SSE if WS is unavailable "
-            "(OpticOdds FAQ: no WebSockets; SSE is the documented push). "
-            "Pinnacle is the sharp book on the same stream. Odds API not used.",
+            "leftover: OpticOdds realtime (not the payable path; cannot clear gate 1). "
+            "WebSocket first, SSE if WS is unavailable. Odds API not used here.",
         )
     if odds_api_key:
         return (
             TheOddsApiWebsocketStub(odds_api_key),
-            "Odds API is an optional REST stub only (no WebSocket). "
-            "Set OPTICODDS_API_KEY for the live path.",
+            "Odds API has no public WebSocket. Use sporty ingest --source oddsapi for REST.",
         )
     if fixture_fallback is None:
         raise ValueError("No stream key and no fixture fallback path")
     return (
         FixtureReplayProvider(fixture_fallback),
-        "degrade: no OPTICODDS_API_KEY — fixture ingest. Odds API not prioritized.",
+        "degrade: no stream key — fixture ingest.",
     )
 
 

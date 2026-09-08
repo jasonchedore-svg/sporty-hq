@@ -30,6 +30,11 @@ from sporty_hq.archive import (
     save_audit,
 )
 from sporty_hq.backtest import load_historical_closes, render_backtest_markdown, run_backtest, save_result
+from sporty_hq.cheap_history import (
+    HistoricalUnavailable,
+    fetch_odds_api_historical_closes,
+    fetch_sportsgameodds_historical_closes,
+)
 from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
@@ -177,7 +182,7 @@ def ingest(
     source: str = typer.Option(
         "auto",
         "--source",
-        help="auto | fixture | opticodds | stream | oddsapi",
+        help="auto | fixture | oddsapi | sportsgameodds | opticodds | stream",
     ),
     path: Optional[Path] = typer.Option(None, "--path", help="JSON or CSV fixture path"),
     replay: Optional[Path] = typer.Option(
@@ -186,7 +191,7 @@ def ingest(
     max_events: int = typer.Option(40, "--max-events", help="Cap quotes from OpticOdds realtime (WS then SSE)"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Load odds. Live prefers OpticOdds realtime (WS first, SSE fallback) + Pinnacle. Odds API is optional stub only. Never scrapes in a loop."""
+    """Load odds. Payable path: Odds API or SportsGameOdds. OpticOdds is optional leftover, not required. Never scrapes in a loop."""
     settings = _settings(data_dir)
     store = _store(settings)
     _require_ops(settings, store)
@@ -286,7 +291,7 @@ def log_bet(
     live: bool = typer.Option(
         False,
         "--live",
-        help="Live ticket. Locked until historical backtest + ~2–3 week paper confirm. Default is paper.",
+        help="Refused this protocol (paper only). Still trips kill switch A.",
     ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
@@ -604,17 +609,76 @@ def archive_audit_cmd(
         raise typer.Exit(1)
 
 
+def _backtest_rows(
+    settings: Settings, *, source: str, path: Optional[Path]
+) -> tuple[list, str]:
+    """Load archive file or pull payable-feed history. Never invent OpticOdds/Pinnacle."""
+    kind = (source or "auto").strip().lower()
+    if kind in {"opticodds", "sse", "live", "stream", "websocket", "ws"}:
+        console.print(
+            "[red]OpticOdds is not the payable path.[/red] Gate 1 uses The Odds API or "
+            "SportsGameOdds. HQ will not invent an OpticOdds archive or live-stream closes."
+        )
+        raise typer.Exit(2)
+    odds_key = (
+        settings.the_odds_api_key.get_secret_value()
+        if settings.secret_configured("the_odds_api_key")
+        else None
+    )
+    sgo_key = (
+        settings.sportsgameodds_api_key.get_secret_value()
+        if settings.secret_configured("sportsgameodds_api_key")
+        else None
+    )
+    if path is not None:
+        return load_historical_closes(path), str(path)
+    if kind in {"auto", "archive", "file", "csv", "json"}:
+        if odds_key:
+            kind = "oddsapi"
+        elif sgo_key:
+            kind = "sportsgameodds"
+        else:
+            console.print(
+                "[red]--path is required unless THE_ODDS_API_KEY or SPORTSGAMEODDS_API_KEY "
+                "can fetch history.[/red] Pass an Odds API / SportsGameOdds export "
+                "(posted_feed=oddsapi|sportsgameodds, posted_book=fanduel). "
+                "HQ will not silently load a fixture or invent closes."
+            )
+            raise typer.Exit(2)
+    if kind in {"oddsapi", "theoddsapi", "the-odds-api"}:
+        if not odds_key:
+            console.print(
+                "[red]THE_ODDS_API_KEY is not set.[/red] Pass --path to an Odds API export. "
+                "HQ will not invent historical closes."
+            )
+            raise typer.Exit(2)
+        console.print("Pulling Odds API historical snapshots (paid plan; ~3-day scores window).")
+        return fetch_odds_api_historical_closes(odds_key), "oddsapi:historical"
+    if kind in {"sportsgameodds", "sgo", "sports-game-odds"}:
+        if not sgo_key:
+            console.print(
+                "[red]SPORTSGAMEODDS_API_KEY is not set.[/red] Pass --path to an SGO export. "
+                "HQ will not invent historical closes."
+            )
+            raise typer.Exit(2)
+        console.print("Pulling SportsGameOdds finalized events (includeOpenCloseOdds).")
+        return fetch_sportsgameodds_historical_closes(sgo_key), "sportsgameodds:historical"
+    raise typer.BadParameter(
+        "source must be auto, archive, oddsapi, or sportsgameodds (opticodds is refused)"
+    )
+
+
 @app.command()
 def backtest(
     path: Optional[Path] = typer.Option(
         None,
         "--path",
-        help="CSV/JSON OpticOdds archive export (posted vs close). Required. No silent fixture.",
+        help="CSV/JSON Odds API or SportsGameOdds archive (posted vs close). Optional if THE_ODDS_API_KEY can fetch history.",
     ),
     source: str = typer.Option(
-        "archive",
+        "auto",
         "--source",
-        help="archive (local export) | opticodds (refuses: SSE has no historical closes)",
+        help="auto | archive | oddsapi | sportsgameodds | opticodds (refused: not payable, not invented)",
     ),
     seasons: int = typer.Option(1, "--seasons", help="How many trailing seasons in the file (1–3)"),
     gaps: Optional[Path] = typer.Option(
@@ -627,35 +691,15 @@ def backtest(
     ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Gate 1: historical CLV vs closes. Archive audit is a hard stop first. No bets."""
+    """Gate 1: cheap-feed historical CLV. Paper only. Archive audit is a hard stop. No bets."""
     settings = _settings(data_dir)
     store = _store(settings)
     kind = source.strip().lower()
-    if kind in {"opticodds", "sse", "live", "stream"}:
-        keyed = settings.secret_configured("opticodds_api_key")
-        if not keyed:
-            console.print(
-                "[red]OPTICODDS_API_KEY is not set.[/red] OpticOdds SSE is realtime only and "
-                "does not contain historical closes. Export the cleared archive to CSV/JSON "
-                "and pass --path. HQ will not invent numbers."
-            )
-            raise typer.Exit(2)
-        console.print(
-            "[red]OpticOdds SSE is realtime only — there is no historical-close fetch in this CLI.[/red] "
-            "Export the owner-cleared archive to CSV/JSON and pass --path. "
-            "HQ will not invent closes from the live stream."
-        )
-        raise typer.Exit(2)
-    if kind not in {"archive", "file", "csv", "json"}:
-        raise typer.BadParameter("source must be archive (local export) or opticodds")
-    if path is None:
-        console.print(
-            "[red]--path is required.[/red] Pass the OpticOdds archive export (CSV/JSON) "
-            "with posted_feed=opticodds, posted_book=fanduel, close_book=pinnacle. "
-            "HQ will not silently load a fixture or invent closes."
-        )
-        raise typer.Exit(2)
-    rows = load_historical_closes(path)
+    try:
+        rows, origin = _backtest_rows(settings, source=kind, path=path)
+    except HistoricalUnavailable as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
     documented = load_documented_gaps(gaps)
     audit = audit_archive(rows, seasons_requested=seasons, documented_gaps=documented)
     save_audit(settings.data_dir, audit)
@@ -663,7 +707,7 @@ def backtest(
         rows,
         seasons=seasons,
         min_n=settings.backtest_min_n,
-        source=str(path),
+        source=origin,
         target_book=settings.target_book,
         sharp_book=settings.sharp_book,
         audit=audit,
@@ -930,12 +974,19 @@ def _ingest_quotes(
         if settings.secret_configured("opticodds_api_key")
         else None
     )
+    sgo_key = (
+        settings.sportsgameodds_api_key.get_secret_value()
+        if settings.secret_configured("sportsgameodds_api_key")
+        else None
+    )
     fixture_path = path or DEFAULT_FIXTURE
     if kind == "auto":
-        if replay is not None or optic_key:
+        if replay is not None:
             kind = "stream"
         elif odds_key:
             kind = "oddsapi"
+        elif sgo_key:
+            kind = "sportsgameodds"
         else:
             kind = "fixture"
 
@@ -955,7 +1006,22 @@ def _ingest_quotes(
         return (
             provider.fetch_quotes(),
             provider.name,
-            "The Odds API REST snapshot (no public WebSocket; not a poll loop).",
+            "The Odds API REST snapshot (payable path; Pinnacle only if the API returned it).",
+        )
+
+    if kind in {"sportsgameodds", "sgo", "sports-game-odds"}:
+        if not sgo_key:
+            provider = load_provider("fixture", path=fixture_path)
+            return (
+                provider.fetch_quotes(),
+                provider.name,
+                "degrade: SPORTSGAMEODDS_API_KEY unset — fixture ingest.",
+            )
+        provider = load_provider("sportsgameodds", api_key=sgo_key)
+        return (
+            provider.fetch_quotes(),
+            provider.name,
+            "SportsGameOdds REST events (payable path; Pinnacle only if exposed).",
         )
 
     if kind in {"stream", "opticodds", "sse", "websocket", "ws"}:
@@ -981,24 +1047,24 @@ def _ingest_quotes(
                     fallback.fetch_quotes(),
                     fallback.name,
                     "degrade: OpticOdds realtime failed (WS then SSE). "
-                    "Will not invent numbers or switch to Odds API. Fixture ingest.",
+                    "OpticOdds is not the payable path. Will not invent numbers. Fixture ingest.",
                 )
             if odds_key:
                 rest = load_provider("oddsapi", api_key=odds_key)
                 return (
                     rest.fetch_quotes(),
                     rest.name,
-                    "optional stub: The Odds API REST snapshot only (no WebSocket). "
-                    "Set OPTICODDS_API_KEY for the live path.",
+                    "payable path: The Odds API REST snapshot (no public WebSocket). "
+                    "OpticOdds is not required.",
                 )
             fallback = load_provider("fixture", path=fixture_path)
             return (
                 fallback.fetch_quotes(),
                 fallback.name,
-                "degrade: no OPTICODDS_API_KEY — fixture ingest.",
+                "degrade: no THE_ODDS_API_KEY / SPORTSGAMEODDS_API_KEY — fixture ingest.",
             )
 
-    raise typer.BadParameter("source must be auto, fixture, opticodds, stream, or oddsapi")
+    raise typer.BadParameter("source must be auto, fixture, oddsapi, sportsgameodds, opticodds, or stream")
 
 
 def _brief_quotes(

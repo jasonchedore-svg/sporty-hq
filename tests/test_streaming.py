@@ -111,6 +111,6 @@ def test_load_stream_prefers_opticodds_over_oddsapi() -> None:
         fixture_fallback=DEMO,
     )
     assert provider.name == "opticodds"
-    assert "Odds API not used" in note
+    assert "Odds API not used" in note or "not the payable path" in note
     assert "dummy-optic" not in note
     assert "dummy-oddsapi" not in note

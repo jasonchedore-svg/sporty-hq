@@ -1,12 +1,11 @@
-"""Canonical live feed identity. Backtest must match this path.
+"""Canonical live + backtest feed identity (payable cheap path).
 
-Live Sporty ingest: **OpticOdds realtime (WebSocket first, SSE fallback)**
-with FanDuel retail posted numbers plus **Pinnacle** as the sharp overlay and
-preferred closing line. The Odds API is an optional REST stub only — it is
-not the live path and cannot clear gate 1.
+Payable path: **The Odds API** and/or **SportsGameOdds**, FanDuel as the retail
+take, plus **Pinnacle only if that provider exposes it**. OpticOdds is not a
+hard requirement and cannot clear gate 1 (enterprise archive we will not invent).
 
-FORBIDDEN: backtest on Pinnacle closes / sharp-only history, or any other retail
-feed, then go live on OpticOdds. Production edge may not exist.
+If the cheaper feed has no Pinnacle close: log a KNOWN LIABILITY and score CLV
+against the provider's own close. Never invent Pinnacle prices.
 """
 
 from __future__ import annotations
@@ -16,48 +15,67 @@ from typing import Any, Iterable
 
 from sporty_hq.models import normalize_book
 
-LIVE_FEED_ID = "opticodds+pinnacle"
-LIVE_POSTED_FEED = "opticodds"
+LIVE_FEED_ID = "oddsapi|sportsgameodds+optional-pinnacle"
 LIVE_POSTED_BOOK = "fanduel"
 LIVE_SHARP_BOOK = "pinnacle"
-OPTIONAL_STUB_FEED = "oddsapi"
+
+FEED_ODDSAPI = "oddsapi"
+FEED_SGO = "sportsgameodds"
+FEED_OPTICODDS = "opticodds"
+
+ALLOWED_POSTED_FEEDS = frozenset({FEED_ODDSAPI, FEED_SGO})
 
 POSTED_FEED_ALIASES = {
-    "opticodds": LIVE_POSTED_FEED,
-    "optic": LIVE_POSTED_FEED,
-    "sse": LIVE_POSTED_FEED,
-    "opticodds_sse": LIVE_POSTED_FEED,
-    "opticodds-sse": LIVE_POSTED_FEED,
-    "websocket": LIVE_POSTED_FEED,
-    "ws": LIVE_POSTED_FEED,
+    "oddsapi": FEED_ODDSAPI,
+    "theoddsapi": FEED_ODDSAPI,
+    "the-odds-api": FEED_ODDSAPI,
+    "the_odds_api": FEED_ODDSAPI,
+    "odds-api": FEED_ODDSAPI,
+    "sportsgameodds": FEED_SGO,
+    "sports-game-odds": FEED_SGO,
+    "sgo": FEED_SGO,
+    "sportsgameodds.com": FEED_SGO,
 }
 
-FORBIDDEN_POSTED_FEEDS = frozenset(
+ENTERPRISE_FEEDS = frozenset(
     {
-        "pinnacle",
-        "pinny",
-        "sharp",
-        "pinnacle-history",
-        "pinnacle_history",
-        "oddsapi",
-        "theoddsapi",
-        "the-odds-api",
-        "the_odds_api",
-        OPTIONAL_STUB_FEED,
+        FEED_OPTICODDS,
+        "optic",
+        "sse",
+        "opticodds-sse",
+        "opticodds_sse",
+        "websocket",
+        "ws",
     }
+)
+
+SHARP_ONLY_FEEDS = frozenset(
+    {"pinnacle", "pinny", "sharp", "pinnacle-history", "pinnacle_history"}
 )
 
 FORBIDDEN_POSTED_BOOKS = frozenset({"pinnacle", "pinnaclesports", "pinny", "sharp"})
 
-STUB_FEEDS = frozenset(
-    {"oddsapi", "theoddsapi", "the-odds-api", "the_odds_api", OPTIONAL_STUB_FEED}
+LIABILITY_NO_PINNACLE = (
+    "KNOWN LIABILITY: cheaper feed did not expose Pinnacle closes. CLV uses the "
+    "provider's own close. HQ did not invent Pinnacle prices. Expect a thinner "
+    "or noisier edge than a true sharp close."
+)
+LIABILITY_THIN_HISTORY = (
+    "KNOWN COST: Odds API / SportsGameOdds history is thinner and gappier than "
+    "an enterprise OpticOdds archive. Missing events/markets/snapshots are "
+    "logged, not filled. A passing CLV on this feed may not survive a denser book."
+)
+LIABILITY_OPTICODDS_DROPPED = (
+    "OpticOdds is not the payable path and is not required for gate 1. HQ will "
+    "not invent OpticOdds archives or silently substitute them."
 )
 
 
 def describe_live_feed() -> str:
     return (
-        "Live path: OpticOdds realtime (WebSocket first, SSE if WS is unavailable) "
-        "with FanDuel posted + Pinnacle sharp benchmark/close. Odds API is an optional REST stub only."
+        "Payable path: The Odds API or SportsGameOdds (FanDuel retail take) plus "
+        "Pinnacle only if that provider exposes it. Paper trade only. OpticOdds "
+        "is not required and is not invented."
     )
 
 
@@ -66,8 +84,15 @@ def normalize_feed(value: str | None) -> str:
 
 
 def canonical_posted_feed(value: str | None) -> str:
-    key = normalize_feed(value)
-    return POSTED_FEED_ALIASES.get(key, key)
+    raw = (value or "").strip().lower().replace(" ", "")
+    hyphen = raw.replace("_", "-")
+    if raw in POSTED_FEED_ALIASES:
+        return POSTED_FEED_ALIASES[raw]
+    if hyphen in POSTED_FEED_ALIASES:
+        return POSTED_FEED_ALIASES[hyphen]
+    if raw in ENTERPRISE_FEEDS or hyphen in ENTERPRISE_FEEDS:
+        return FEED_OPTICODDS
+    return hyphen or raw
 
 
 @dataclass(frozen=True)
@@ -79,6 +104,8 @@ class FeedParity:
     close_books: tuple[str, ...]
     close_feeds: tuple[str, ...]
     detail: str
+    pinnacle_close: bool = False
+    liabilities: tuple[str, ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +116,8 @@ class FeedParity:
             "close_books": list(self.close_books),
             "close_feeds": list(self.close_feeds),
             "detail": self.detail,
+            "pinnacle_close": self.pinnacle_close,
+            "liabilities": list(self.liabilities),
             "live_feed_id": LIVE_FEED_ID,
             "live_path": describe_live_feed(),
         }
@@ -100,11 +129,7 @@ def evaluate_feed_parity(
     target_book: str = LIVE_POSTED_BOOK,
     sharp_book: str = LIVE_SHARP_BOOK,
 ) -> FeedParity:
-    """Require the same posted feed + sharp close Sporty uses live.
-
-    Posted/take = OpticOdds FanDuel. Close / CLV benchmark = Pinnacle.
-    Sharp-only or Odds-API-only history never matches.
-    """
+    """Require the payable cheap feed. Pinnacle close is optional, never invented."""
     target = normalize_book(target_book) or LIVE_POSTED_BOOK
     sharp = normalize_book(sharp_book) or LIVE_SHARP_BOOK
     items = list(rows)
@@ -115,7 +140,8 @@ def evaluate_feed_parity(
         posted_books=(),
         close_books=(),
         close_feeds=(),
-        detail="No historical rows — cannot prove feed parity with live OpticOdds+Pinnacle.",
+        detail="No historical rows — cannot prove feed parity with the payable Odds API / SportsGameOdds path.",
+        liabilities=(LIABILITY_THIN_HISTORY,),
     )
     if not items:
         return empty
@@ -125,11 +151,11 @@ def evaluate_feed_parity(
         normalize_book(getattr(r, "posted_book", None) or "") or "" for r in items
     )
     close_books = tuple(
-        normalize_book(getattr(r, "close_book", None) or sharp) or sharp for r in items
+        normalize_book(getattr(r, "close_book", None) or "") or "" for r in items
     )
     close_feeds = tuple(canonical_posted_feed(getattr(r, "close_feed", None)) for r in items)
 
-    def fail(feed_id: str, detail: str) -> FeedParity:
+    def fail(feed_id: str, detail: str, extra: tuple[str, ...] = ()) -> FeedParity:
         return FeedParity(
             matched=False,
             feed_id=feed_id,
@@ -138,78 +164,85 @@ def evaluate_feed_parity(
             close_books=tuple(sorted({b for b in close_books if b})),
             close_feeds=tuple(sorted({f for f in close_feeds if f})),
             detail=detail,
+            pinnacle_close=False,
+            liabilities=(LIABILITY_THIN_HISTORY,) + extra,
         )
 
     if any(not f for f in posted_feeds) or any(not b for b in posted_books):
         return fail(
             "unlabeled",
-            "Feed identity required on every row (posted_feed=opticodds, "
-            "posted_book=fanduel, close_book=pinnacle). Unlabeled or sharp-only "
-            "history cannot clear gate 1 — production edge may not exist.",
+            "Feed identity required on every row (posted_feed=oddsapi|sportsgameodds, "
+            "posted_book=fanduel). Unlabeled history cannot clear gate 1.",
         )
 
-    forbidden_feeds = sorted({f for f in posted_feeds if f in FORBIDDEN_POSTED_FEEDS})
-    if forbidden_feeds:
-        if any(f in STUB_FEEDS for f in forbidden_feeds):
-            return fail(
-                "oddsapi-stub",
-                "FORBIDDEN: Odds API REST is an optional stub, not the live path. "
-                "Backtest must use OpticOdds realtime posted numbers + Pinnacle close. "
-                f"Found posted_feed={forbidden_feeds}.",
-            )
+    if any(f == FEED_OPTICODDS or f in ENTERPRISE_FEEDS for f in posted_feeds):
+        return fail(
+            "opticodds-enterprise",
+            "FORBIDDEN for gate 1: OpticOdds is not the payable path. "
+            "Backtest on The Odds API or SportsGameOdds. HQ will not invent an "
+            f"OpticOdds archive. Found posted_feed={sorted(set(posted_feeds))}.",
+            extra=(LIABILITY_OPTICODDS_DROPPED,),
+        )
+
+    sharp_feeds = sorted({f for f in posted_feeds if f in SHARP_ONLY_FEEDS})
+    if sharp_feeds:
         return fail(
             "pinnacle-only",
-            "FORBIDDEN: backtest on Pinnacle/sharp-only history then go live on a "
-            "different retail feed. Live posted feed is OpticOdds (FanDuel). "
-            f"Found posted_feed={forbidden_feeds}.",
+            "FORBIDDEN: posted/take is Pinnacle/sharp-only. Live take is FanDuel "
+            f"on Odds API or SportsGameOdds. Found posted_feed={sharp_feeds}.",
         )
 
     if any(b in FORBIDDEN_POSTED_BOOKS for b in posted_books):
         return fail(
             "pinnacle-only",
-            "FORBIDDEN: posted/take book is Pinnacle (sharp-only). Live take is "
-            f"FanDuel via OpticOdds; Pinnacle is the close/benchmark only. "
+            "FORBIDDEN: posted/take book is Pinnacle. Live take is FanDuel. "
             f"Found posted_book={sorted(set(posted_books))}.",
         )
 
-    if any(f != LIVE_POSTED_FEED for f in posted_feeds):
+    unknown = sorted({f for f in posted_feeds if f not in ALLOWED_POSTED_FEEDS})
+    if unknown:
         return fail(
             "mismatch",
-            f"posted_feed must be {LIVE_POSTED_FEED} (live OpticOdds realtime). "
-            f"Found {sorted(set(posted_feeds))}. Do not mix feeds.",
+            "posted_feed must be oddsapi or sportsgameodds (payable cheap path). "
+            f"Found {unknown}.",
         )
 
     if any(b != target for b in posted_books):
         return fail(
             "mismatch",
             f"posted_book must be {target} (live target book). "
-            f"Found {sorted(set(posted_books))}. Retail mismatch vs live is forbidden.",
+            f"Found {sorted(set(posted_books))}.",
         )
 
-    if any(b != sharp for b in close_books):
-        return fail(
-            "mismatch",
-            f"close_book must be {sharp} (Pinnacle sharp close / CLV benchmark). "
-            f"Found {sorted(set(close_books))}.",
-        )
+    unique_posted = tuple(sorted({f for f in posted_feeds if f}))
+    unique_close_books = tuple(sorted({b for b in close_books if b}))
+    unique_close_feeds = tuple(sorted({f for f in close_feeds if f}))
+    pinnacle_close = bool(unique_close_books) and all(b == sharp for b in close_books)
+    liabilities: list[str] = [LIABILITY_THIN_HISTORY]
+    if not pinnacle_close:
+        liabilities.append(LIABILITY_NO_PINNACLE)
+        if any(not b for b in close_books):
+            liabilities.append(
+                "KNOWN LIABILITY: close_book unlabeled on one or more rows — "
+                "not treated as Pinnacle. HQ did not invent a sharp close."
+            )
+        elif unique_close_books:
+            liabilities.append(
+                f"Close books present: {list(unique_close_books)} (not all {sharp})."
+            )
 
-    extra_close_feeds = {f for f in close_feeds if f and f != LIVE_POSTED_FEED}
-    if extra_close_feeds:
-        return fail(
-            "mismatch",
-            "close_feed, when set, must be opticodds (same live stream that also "
-            f"carries Pinnacle). Found {sorted(extra_close_feeds)}.",
-        )
-
+    detail = (
+        f"Feed parity matched payable path {LIVE_FEED_ID}: posted {list(unique_posted)}/"
+        f"{target}. Pinnacle close={'yes' if pinnacle_close else 'NO — liability logged'}."
+    )
     return FeedParity(
         matched=True,
         feed_id=LIVE_FEED_ID,
-        posted_feeds=(LIVE_POSTED_FEED,),
+        posted_feeds=unique_posted,
         posted_books=(target,),
-        close_books=(sharp,),
-        close_feeds=tuple(sorted({f for f in close_feeds if f})) or (LIVE_POSTED_FEED,),
-        detail=(
-            f"Feed parity matched live path {LIVE_FEED_ID}: OpticOdds posted/"
-            f"{target} + Pinnacle close. Odds API stub not used."
-        ),
+        close_books=unique_close_books,
+        close_feeds=unique_close_feeds,
+        detail=detail,
+        pinnacle_close=pinnacle_close,
+        liabilities=tuple(liabilities),
     )

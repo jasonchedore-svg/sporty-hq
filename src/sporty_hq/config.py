@@ -65,12 +65,21 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("OPTICODDS_API_KEY", "SPORTY_HQ_OPTICODDS_API_KEY"),
     )
+    sportsgameodds_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SPORTSGAMEODDS_API_KEY",
+            "SGO_API_KEY",
+            "SPORTY_HQ_SPORTSGAMEODDS_API_KEY",
+        ),
+    )
 
     @field_validator(
         "webhook_url",
         "slack_webhook_url",
         "the_odds_api_key",
         "opticodds_api_key",
+        "sportsgameodds_api_key",
         mode="before",
     )
     @classmethod
@@ -128,6 +137,7 @@ class Settings(BaseSettings):
             f"target_book={self.target_book!r}, slack={self.secret_configured('slack_webhook_url')}, "
             f"webhook={self.secret_configured('webhook_url')}, "
             f"odds_api={self.secret_configured('the_odds_api_key')}, "
+            f"sportsgameodds={self.secret_configured('sportsgameodds_api_key')}, "
             f"opticodds={self.secret_configured('opticodds_api_key')})"
         )
 

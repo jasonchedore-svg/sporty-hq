@@ -45,10 +45,10 @@ def _row(*, season="2025", i=0, market="ml", sport="baseball_mlb", **over) -> Hi
         selection="Yankees",
         posted_odds=165,
         close_odds=148,
-        posted_feed="opticodds",
+        posted_feed="oddsapi",
         posted_book="fanduel",
         close_book="pinnacle",
-        close_feed="opticodds",
+        close_feed="oddsapi",
         posted_at=_iso(posted),
         close_at=_iso(close),
         commence_at=_iso(commence),
@@ -81,15 +81,17 @@ def test_feed_parity_rejects_pinnacle_only_history() -> None:
     assert result.feed_parity is False
 
 
-def test_backtest_clears_on_opticodds_fanduel_plus_pinnacle_true_close() -> None:
+def test_backtest_clears_on_oddsapi_fanduel_plus_pinnacle_true_close() -> None:
     rows = _covered_season()
-    result = run_backtest(rows, seasons=1, min_n=30, source="/tmp/opticodds-archive.csv", sample=False)
+    result = run_backtest(rows, seasons=1, min_n=30, source="/tmp/oddsapi-archive.csv", sample=False)
     assert result.archive_audit_passed
     assert result.feed_parity
     assert result.n >= 30
     assert result.avg_clv and result.avg_clv > 0
     assert result.cleared is True
     assert result.sample is False
+    assert result.pinnacle_close is True
+    assert result.liabilities
     ids = {a["id"] for a in result.assumptions}
     assert set(REQUIRED_ASSUMPTION_IDS) <= ids
     sources = {d["id"] for d in result.data_sources}
@@ -151,11 +153,45 @@ def test_sample_fixture_cannot_clear_gate(data_dir: Path) -> None:
     assert load_status(data_dir).paused is False
 
 
+def test_feed_parity_rejects_opticodds_enterprise_archive() -> None:
+    rows = _covered_season()
+    for r in rows:
+        r.posted_feed = "opticodds"
+        r.close_feed = "opticodds"
+    parity = evaluate_feed_parity(rows)
+    assert not parity.matched
+    assert parity.feed_id == "opticodds-enterprise"
+    result = run_backtest(rows, seasons=1, min_n=30, source="/tmp/opticodds-archive.csv", sample=False)
+    assert result.cleared is False
+    assert result.feed_parity is False
+
+
+def test_backtest_clears_without_pinnacle_and_logs_liability() -> None:
+    rows = _covered_season()
+    for r in rows:
+        r.close_book = "fanduel"
+    result = run_backtest(rows, seasons=1, min_n=30, source="/tmp/oddsapi-archive.csv", sample=False)
+    assert result.feed_parity
+    assert result.pinnacle_close is False
+    assert result.cleared is True
+    assert any("KNOWN LIABILITY" in item for item in result.liabilities)
+    md = render_backtest_markdown(result)
+    assert "KNOWN LIABILITY" in md
+    assert "Pinnacle" in md
+
+
 def test_backtest_refuses_opticodds_source_without_inventing(data_dir: Path) -> None:
     r = runner.invoke(app, ["backtest", "--source", "opticodds", "--data-dir", str(data_dir)])
     assert r.exit_code == 2
-    assert "OPTICODDS_API_KEY" in r.output
+    assert "not the payable path" in r.output.lower() or "OpticOdds is not the payable path" in r.output
     assert "will not invent" in r.output.lower()
+
+
+def test_backtest_oddsapi_source_without_key_does_not_invent(data_dir: Path) -> None:
+    r = runner.invoke(app, ["backtest", "--source", "oddsapi", "--data-dir", str(data_dir)])
+    assert r.exit_code == 2
+    assert "THE_ODDS_API_KEY" in r.output
+    assert "invent" in r.output.lower()
 
 
 def test_backtest_requires_path(data_dir: Path) -> None:
@@ -186,7 +222,7 @@ def test_archive_audit_on_sample_file(data_dir: Path) -> None:
 def test_load_csv_feed_identity() -> None:
     rows = load_historical_closes(SAMPLE_CSV)
     assert rows
-    assert rows[0].posted_feed == "opticodds"
+    assert rows[0].posted_feed == "oddsapi"
     assert rows[0].posted_book == "fanduel"
     assert rows[0].close_book == "pinnacle"
 
@@ -218,7 +254,7 @@ def test_failed_audit_overwrites_prior_cleared_backtest(data_dir: Path, settings
         _covered_season(),
         seasons=1,
         min_n=30,
-        source="/tmp/opticodds-archive.csv",
+        source="/tmp/oddsapi-archive.csv",
         sample=False,
     )
     assert good.cleared is True

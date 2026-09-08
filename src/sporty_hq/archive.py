@@ -1,9 +1,9 @@
-"""OpticOdds historical archive audit — hard prerequisite before any backtest.
+"""Archive audit — hard prerequisite before any backtest.
 
-Owner (2026-09-08): the OpticOdds archive audit is CLEARED. That standing flag
-does not skip per-file checks. Every `sporty backtest` must pass this audit
-first. Thin coverage, junk timestamps, or last-seen quotes: emit a report and
-**stop** — do not score a vanity CLV that looks cleaner than the archive.
+File checks still run on every `sporty backtest` (coverage, timestamps, true
+close vs last-seen). Thin coverage, junk timestamps, or last-seen quotes: emit
+a report and **stop** — do not score a vanity CLV. Payable path is Odds API /
+SportsGameOdds, not an invented OpticOdds archive.
 
 Checks:
 - coverage gaps (seasons / sport families / straight markets)

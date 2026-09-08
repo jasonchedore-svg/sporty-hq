@@ -47,7 +47,7 @@ def test_backtest_then_paper_then_live_requires_positive_clv(store, settings, da
         _covered_season(),
         seasons=1,
         min_n=30,
-        source="/tmp/opticodds-archive.csv",
+        source="/tmp/oddsapi-archive.csv",
         sample=False,
     )
     assert result.cleared
@@ -60,9 +60,9 @@ def test_backtest_then_paper_then_live_requires_positive_clv(store, settings, da
     gates = evaluate_gates(store, settings, now)
     assert gates.backtest.cleared
     assert gates.paper_confirm.cleared
-    assert gates.live_unlocked
+    assert gates.live_unlocked is False  # paper-only protocol
 
-    # Paper avg CLV must stay positive — a later losing sample un-clears live.
+    # Paper avg CLV must stay positive — a later losing sample un-clears paper confirm.
     for i in range(40, 80):
         store.insert_bet(_paper(i, clv=-2.0, logged_at=now))
     gates = evaluate_gates(store, settings, now)
