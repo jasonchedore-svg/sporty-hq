@@ -12,6 +12,8 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
 
 **Locked feed:** OpticOdds realtime first (WebSocket attempt → SSE fallback) with Pinnacle as sharp overlay. Odds API is not on the live path.
 
+**Feed parity (non-negotiable):** Gate 1 historical backtest **must use this same path** — OpticOdds realtime posted/take (FanDuel) **plus** Pinnacle as the sharp close/benchmark. Do **not** backtest on Pinnacle closing lines alone (or any other retail-only dump) and then go live on OpticOdds. That edge may not exist in production. `sporty backtest` refuses to clear if `posted_feed`/`posted_book` are Pinnacle, Odds API, unlabeled, or otherwise mismatched. Kill switch and CLV-first order are unchanged.
+
 ```
  OpticOdds realtime (WS first → SSE)  +  Pinnacle sharp on the same stream
             │  optional: Odds API REST stub (only if no OpticOdds key)
@@ -34,7 +36,7 @@ Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel your
 
 | Layer | What it does | What it does not |
 |---|---|---|
-| **Ingest** | OpticOdds **WebSocket first**, **SSE** if WS fails; Pinnacle on that stream; Odds API **one-shot REST stub**; fixtures | Prefer Odds API. Poll loops. Commit/log keys. FanDuel login. |
+| **Feed parity** | Backtest and live share `opticodds+pinnacle` (FanDuel take on OpticOdds, Pinnacle close) | Pinnacle-only history, Odds API history, or a different retail feed as the take |
 | **Sharp** | Pinnacle as benchmark vs FanDuel retail when the book is on the board | Treat Pinnacle as a bettable Ontario book |
 | **Scan** | ≥3% juice-removed EV vs consensus; Pinnacle overlay; lessons from prior settles | Place tickets. Replace CLV as the scoreboard. |
 | **Bankroll** | Flat **$25** unit; optional fractional Kelly **capped at 1 unit**; daily **−$100** / seasonal **−$500** | Auto-stake on FanDuel. `--force` bypass of stops or kill switch. |
@@ -75,7 +77,7 @@ Past CLV or P&L (including the sample session fixture) is **not** a prediction o
 | Sports | **MLB + NFL first** (NFL from **Week 1 Wednesday** onward). Then **NCAAF**. **NBA/NHL** when in season. **Soccer** only if liquid mains (≥3 books). |
 | Alerts | **Chat (console) + file**; generic webhook if configured. Slack incoming webhook optional later. SMS later. |
 | Pre-game | **30–60 min** before tip, **flagged plays only** (≥3% edge). **Quiet** if nothing clears. |
-| CLV | American odds at bet vs close, **same market**. **Flat = 0**. Positive = beat the close. |
+| Feed | **OpticOdds realtime + Pinnacle sharp.** Backtest must match live. No Pinnacle-only / retail-mismatch history. |
 
 ---
 
@@ -114,13 +116,15 @@ See `schemas/session.schema.json`. Runtime file: `data/session.json` (gitignored
 
 Build order does not change: **CLV dashboard first** → **OpticOdds realtime + Pinnacle sharp** → hold human-source/tipster lessons until feed+dashboard are logging. Scan is not the scoreboard. Kill switch is unchanged (A: acted before gates; B: paper avg CLV ≤ 0 at n≥100).
 
-1. **Gate 1 — historical backtest** vs prior season(s) closing lines (1–3 seasons). Same CLV math as the dashboard. Must beat the close (`avg CLV > 0`) on the OpticOdds+Pinnacle path. **Caveat: backtest ≠ will work again.**
+1. **Gate 1 — historical backtest** vs prior season(s) closing lines (1–3 seasons). Same CLV math as the dashboard. **Same feed as live:** OpticOdds realtime posted (FanDuel) + Pinnacle sharp close — not Pinnacle-only history. Must beat the close (`avg CLV > 0`). **Caveat: backtest ≠ will work again.**
 2. **Gate 2 — paper the current season ~2–3 weeks** (default 21 days; not a full 17-week NFL slate). Avg CLV must **stay positive** or this gate (and live) un-clears.
 3. **Live only after both gates**, and only while paper avg CLV stays positive. `log-bet --live` before that trips kill switch A.
 
 ---
 
 ## Historical backtest (gate 1)
+
+Feed parity is **non-negotiable**: the archive must be the live path (`posted_feed=opticodds`, `posted_book=fanduel`, `close_book=pinnacle`). Backtesting Pinnacle closes alone (or a different retail feed) and then going live on OpticOdds is forbidden — that edge may not exist in production. Gate 1 will not clear on that file.
 
 CLV dashboard + paper `log-bet` are the scoreboard. **No live tickets** until this backtest (non-sample) and a ~2–3 week paper confirm both clear. Kill switch stays armed.
 
@@ -157,7 +161,7 @@ sporty log-bet --live        # trips kill switch A until both gates clear
 sporty desk-status
 ```
 
-Feed parity: **OpticOdds posted / FanDuel take + Pinnacle close**. Pinnacle-only history cannot clear. Odds API is an optional REST stub, not this path.
+Feed parity: **OpticOdds posted / FanDuel take + Pinnacle close on the same live path.** Pinnacle-only history, Odds API history, or a mismatched retail take **cannot clear**. Odds API is an optional REST stub, not this path.
 
 ---
 
