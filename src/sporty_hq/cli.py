@@ -32,6 +32,7 @@ from sporty_hq.backtest import load_historical_closes, run_backtest, save_result
 from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
+from sporty_hq.lessons import apply_lessons
 from sporty_hq.gates import evaluate_gates
 from sporty_hq.killswitch import (
     ReviewArtifactError,
@@ -176,16 +177,16 @@ def ingest(
     source: str = typer.Option(
         "auto",
         "--source",
-        help="auto | fixture | oddsapi | opticodds | stream",
+        help="auto | fixture | opticodds | stream | oddsapi",
     ),
     path: Optional[Path] = typer.Option(None, "--path", help="JSON or CSV fixture path"),
     replay: Optional[Path] = typer.Option(
         None, "--replay", help="Replay a fixture as a push batch (stream stub / offline)"
     ),
-    max_events: int = typer.Option(40, "--max-events", help="Cap quotes collected from a live SSE"),
+    max_events: int = typer.Option(40, "--max-events", help="Cap quotes from OpticOdds realtime (WS then SSE)"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
-    """Load odds. Live prefers OpticOdds SSE push; no key → fixture. Never scrapes in a loop."""
+    """Load odds. Live prefers OpticOdds realtime (WS first, SSE fallback) + Pinnacle. Odds API is optional stub only. Never scrapes in a loop."""
     settings = _settings(data_dir)
     store = _store(settings)
     _require_ops(settings, store)
@@ -240,7 +241,7 @@ def scan(
         min_edge=settings.min_edge,
     )
     candidates = score_quotes(quotes, config)
-    # Human-source lessons are HELD until CLV + Pinnacle are live and logging.
+    apply_lessons(candidates, store.list_lessons())
     if settings.kelly_fraction > 0:
         for cand in candidates:
             cand.suggested_stake = suggested_stake(
@@ -926,33 +927,47 @@ def _ingest_quotes(
             "The Odds API REST snapshot (no public WebSocket; not a poll loop).",
         )
 
-    if kind in {"stream", "opticodds", "sse"}:
+    if kind in {"stream", "opticodds", "sse", "websocket", "ws"}:
+        explicit_optic = kind in {"opticodds", "sse", "websocket", "ws"}
         provider, note = load_stream_provider(
             opticodds_key=optic_key,
-            odds_api_key=odds_key if kind == "stream" else None,
+            odds_api_key=odds_key if (kind == "stream" and not optic_key) else None,
             replay_path=replay,
             fixture_fallback=fixture_path,
         )
         try:
             quotes = collect_stream_quotes(provider, max_events=max_events)
+            transport = getattr(provider, "transport", "")
+            if transport == "sse":
+                note = note + " Active transport: SSE (WebSocket did not connect)."
+            elif transport == "websocket":
+                note = note + " Active transport: WebSocket."
             return quotes, provider.name, note
         except StreamingUnavailable:
+            if optic_key or explicit_optic:
+                fallback = load_provider("fixture", path=fixture_path)
+                return (
+                    fallback.fetch_quotes(),
+                    fallback.name,
+                    "degrade: OpticOdds realtime failed (WS then SSE). "
+                    "Will not invent numbers or switch to Odds API. Fixture ingest.",
+                )
             if odds_key:
                 rest = load_provider("oddsapi", api_key=odds_key)
                 return (
                     rest.fetch_quotes(),
                     rest.name,
-                    "The Odds API has no WebSocket — single REST snapshot, then stop. "
-                    "Prefer OpticOdds SSE when keyed.",
+                    "optional stub: The Odds API REST snapshot only (no WebSocket). "
+                    "Set OPTICODDS_API_KEY for the live path.",
                 )
             fallback = load_provider("fixture", path=fixture_path)
             return (
                 fallback.fetch_quotes(),
                 fallback.name,
-                "degrade: no streaming key — fixture ingest.",
+                "degrade: no OPTICODDS_API_KEY — fixture ingest.",
             )
 
-    raise typer.BadParameter("source must be auto, fixture, oddsapi, opticodds, or stream")
+    raise typer.BadParameter("source must be auto, fixture, opticodds, stream, or oddsapi")
 
 
 def _brief_quotes(

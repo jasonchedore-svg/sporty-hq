@@ -1,13 +1,13 @@
-"""Push-first odds ingest: OpticOdds SSE, Odds API WS stub, fixture replay.
+"""Push-first odds ingest: OpticOdds realtime first, Odds API optional stub.
 
-Facts (as of 2026-09, labeled where hypothesized):
+Owner feed lock: **OpticOdds realtime (WebSocket first)** with **Pinnacle**
+as the sharp benchmark on the same stream. The Odds API is an optional REST
+fallback only — never preferred when an OpticOdds key is present.
 
-- OpticOdds does **not** offer WebSockets. Official FAQ: SSE only
-  (``GET https://api.opticodds.com/api/v3/stream/odds/{sport}``).
-- The Odds API is REST polling only. No public WebSocket. A future "Quant"
-  push/webhook tier has been hinted; treat as **hypothesis**, not available.
-- Live path prefers SSE/push. Fixture ingest stays for offline/dev.
-- Missing keys → graceful degrade to fixture. Keys never logged.
+Fact (OpticOdds FAQ, 2026): they do **not** offer webhooks or WebSockets; the
+documented realtime product is SSE ``GET /api/v3/stream/odds/{sport}``.
+HQ still **attempts WebSocket first** (owner lock), then falls back to SSE.
+Keys stay in env / ``SecretStr`` — never logged, never committed.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from sporty_hq.odds_math import parse_american
 from sporty_hq.providers import FixtureProvider
 
 OPTICODDS_BASE = "https://api.opticodds.com/api/v3"
+OPTICODDS_WS_BASE = "wss://api.opticodds.com/api/v3/stream"
 OPTICODDS_SPORTS = ("baseball", "football", "basketball", "hockey")
 # Hypothesis: OpticOdds sportsbook labels; max 5 per SSE connection.
 DEFAULT_SPORTSBOOKS = ("FanDuel", "Pinnacle", "DraftKings", "BetMGM", "Caesars")
@@ -184,7 +185,7 @@ class FixtureReplayProvider:
 
 
 class OpticOddsSseProvider:
-    """OpticOdds SSE client (not WebSocket — that transport does not exist)."""
+    """OpticOdds documented realtime transport: SSE (FAQ: no WebSockets)."""
 
     name = "opticodds"
     transport = "sse"
@@ -258,6 +259,130 @@ class OpticOddsSseProvider:
                 client.close()
 
 
+def connect_opticodds_ws(url: str, api_key: str, timeout: float):
+    """Open a WebSocket. Never log ``url`` if it could contain a key (we use headers)."""
+    try:
+        from websockets.sync.client import connect as ws_connect
+    except ImportError as exc:  # pragma: no cover - optional until installed
+        raise StreamingUnavailable(
+            "OpticOdds WebSocket client missing (pip install websockets). "
+            "OpticOdds FAQ: they do not offer WebSockets; HQ falls back to SSE."
+        ) from exc
+    try:
+        return ws_connect(
+            url,
+            additional_headers={"X-Api-Key": api_key, "User-Agent": "sporty-hq"},
+            open_timeout=timeout,
+            close_timeout=2.0,
+        )
+    except StreamingUnavailable:
+        raise
+    except Exception as exc:
+        raise StreamingUnavailable(
+            "OpticOdds WebSocket did not connect. FAQ: OpticOdds does not offer "
+            "WebSockets; realtime is SSE GET /api/v3/stream/odds/{sport}."
+        ) from exc
+
+
+def opticodds_ws_url(sport: str, sportsbooks: list[str], leagues: list[str]) -> str:
+    """Query string without the API key (key is an HTTP header)."""
+    from urllib.parse import urlencode
+
+    params: list[tuple[str, str]] = [("odds_format", "AMERICAN"), ("is_main", "true")]
+    for book in sportsbooks:
+        params.append(("sportsbook", book))
+    for league in leagues:
+        params.append(("league", league))
+    return f"{OPTICODDS_WS_BASE}/odds/{sport}?{urlencode(params)}"
+
+
+class OpticOddsWebsocketProvider:
+    """Owner lock: try OpticOdds WebSocket before SSE. Pinnacle is a sportsbook on the stream."""
+
+    name = "opticodds"
+    transport = "websocket"
+
+    def __init__(
+        self,
+        api_key: str,
+        sports: list[str] | None = None,
+        sportsbooks: list[str] | None = None,
+        leagues: list[str] | None = None,
+        timeout: float = 8.0,
+        max_events: int = 40,
+        ws_connect=None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("OPTICODDS_API_KEY is not set")
+        self._api_key = api_key
+        self.sports = sports or list(OPTICODDS_SPORTS)
+        self.sportsbooks = sportsbooks or list(DEFAULT_SPORTSBOOKS)
+        self.leagues = leagues or list(DEFAULT_LEAGUES)
+        self.timeout = timeout
+        self.max_events = max_events
+        self._ws_connect = ws_connect or connect_opticodds_ws
+
+    def fetch_quotes(self) -> list[Quote]:
+        merged: list[Quote] = []
+        for batch in self.iter_quote_batches():
+            merged.extend(batch)
+            if self.max_events and len(merged) >= self.max_events:
+                break
+        return merged[: self.max_events] if self.max_events else merged
+
+    def iter_quote_batches(self) -> Iterator[list[Quote]]:
+        n_events = 0
+        for sport in self.sports:
+            url = opticodds_ws_url(sport, self.sportsbooks, self.leagues)
+            with self._ws_connect(url, self._api_key, self.timeout) as socket:
+                for raw in socket:
+                    quotes = quotes_from_opticodds_odds(raw, source=self.name)
+                    if not quotes:
+                        continue
+                    n_events += 1
+                    yield quotes
+                    if self.max_events and n_events >= self.max_events:
+                        return
+
+
+class OpticOddsRealtimeProvider:
+    """WebSocket first, SSE fallback. Never Odds API. Pinnacle rides the same OpticOdds stream."""
+
+    name = "opticodds"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        ws: StreamProvider | None = None,
+        sse: StreamProvider | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not api_key:
+            raise ValueError("OPTICODDS_API_KEY is not set")
+        self.ws = ws or OpticOddsWebsocketProvider(api_key, **kwargs)
+        sse_kwargs = {k: v for k, v in kwargs.items() if k != "ws_connect"}
+        self.sse = sse or OpticOddsSseProvider(api_key, **sse_kwargs)
+        self.transport = "websocket"
+
+    def fetch_quotes(self) -> list[Quote]:
+        merged: list[Quote] = []
+        for batch in self.iter_quote_batches():
+            merged.extend(batch)
+            cap = getattr(self.ws, "max_events", 40)
+            if cap and len(merged) >= cap:
+                break
+        return merged
+
+    def iter_quote_batches(self) -> Iterator[list[Quote]]:
+        try:
+            yield from self.ws.iter_quote_batches()
+            self.transport = getattr(self.ws, "transport", "websocket")
+        except StreamingUnavailable:
+            self.transport = "sse"
+            yield from self.sse.iter_quote_batches()
+
+
 class TheOddsApiWebsocketStub:
     """Scaffold only — The Odds API has no public WebSocket (as of 2026).
 
@@ -304,7 +429,7 @@ def load_stream_provider(
     replay_path: Path | None,
     fixture_fallback: Path | None,
 ) -> tuple[StreamProvider, str]:
-    """Prefer OpticOdds SSE; never invent a WS for Odds API; else fixture.
+    """Prefer OpticOdds realtime (WS first, SSE fallback). Odds API is not this path.
 
     Returns ``(provider, note)``. Note is printed by the CLI (no secrets).
     """
@@ -312,19 +437,22 @@ def load_stream_provider(
         return FixtureReplayProvider(replay_path), "replay: fixture as push batch (offline/dev)"
     if opticodds_key:
         return (
-            OpticOddsSseProvider(opticodds_key),
-            "live: OpticOdds SSE (push). Not WebSocket — OpticOdds does not offer WS.",
+            OpticOddsRealtimeProvider(opticodds_key),
+            "live: OpticOdds realtime — WebSocket first, SSE if WS is unavailable "
+            "(OpticOdds FAQ: no WebSockets; SSE is the documented push). "
+            "Pinnacle is the sharp book on the same stream. Odds API not used.",
         )
     if odds_api_key:
         return (
             TheOddsApiWebsocketStub(odds_api_key),
-            "The Odds API WebSocket is unavailable; caller should REST-snapshot or fixture-degrade.",
+            "Odds API is an optional REST stub only (no WebSocket). "
+            "Set OPTICODDS_API_KEY for the live path.",
         )
     if fixture_fallback is None:
         raise ValueError("No stream key and no fixture fallback path")
     return (
         FixtureReplayProvider(fixture_fallback),
-        "degrade: no OPTICODDS_API_KEY / streaming WS — using fixture ingest.",
+        "degrade: no OPTICODDS_API_KEY — fixture ingest. Odds API not prioritized.",
     )
 
 

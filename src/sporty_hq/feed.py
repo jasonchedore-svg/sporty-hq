@@ -1,8 +1,9 @@
 """Canonical live feed identity. Backtest must match this path.
 
-Live Sporty ingest: **OpticOdds SSE realtime** (FanDuel retail posted numbers)
-plus **Pinnacle** as the sharp overlay and preferred closing line. The Odds API
-is an optional REST stub only — it is not the live path and cannot clear gate 1.
+Live Sporty ingest: **OpticOdds realtime (WebSocket first, SSE fallback)**
+with FanDuel retail posted numbers plus **Pinnacle** as the sharp overlay and
+preferred closing line. The Odds API is an optional REST stub only — it is
+not the live path and cannot clear gate 1.
 
 FORBIDDEN: backtest on Pinnacle closes / sharp-only history, or any other retail
 feed, then go live on OpticOdds. Production edge may not exist.
@@ -27,6 +28,8 @@ POSTED_FEED_ALIASES = {
     "sse": LIVE_POSTED_FEED,
     "opticodds_sse": LIVE_POSTED_FEED,
     "opticodds-sse": LIVE_POSTED_FEED,
+    "websocket": LIVE_POSTED_FEED,
+    "ws": LIVE_POSTED_FEED,
 }
 
 FORBIDDEN_POSTED_FEEDS = frozenset(
@@ -53,8 +56,8 @@ STUB_FEEDS = frozenset(
 
 def describe_live_feed() -> str:
     return (
-        "Live path: OpticOdds SSE realtime (FanDuel retail posted) + "
-        "Pinnacle sharp benchmark/close. Odds API is an optional REST stub only."
+        "Live path: OpticOdds realtime (WebSocket first, SSE if WS is unavailable) "
+        "with FanDuel posted + Pinnacle sharp benchmark/close. Odds API is an optional REST stub only."
     )
 
 
@@ -172,7 +175,7 @@ def evaluate_feed_parity(
     if any(f != LIVE_POSTED_FEED for f in posted_feeds):
         return fail(
             "mismatch",
-            f"posted_feed must be {LIVE_POSTED_FEED} (live SSE). "
+            f"posted_feed must be {LIVE_POSTED_FEED} (live OpticOdds realtime). "
             f"Found {sorted(set(posted_feeds))}. Do not mix feeds.",
         )
 

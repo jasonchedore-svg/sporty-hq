@@ -2,7 +2,7 @@
 
 Hybrid **research + alerts** desk for a FanDuel user in **Ontario, Canada**. You scan numbers here, then place **$25 flat** straights yourself on the FanDuel mobile app. Sporty HQ **does not place bets**, **does not fake fills**, and **does not log into FanDuel**. Full-auto is off until explicitly greenlit.
 
-Demo odds ship as fixtures (JSON/CSV). No paid API key is required. Live ingest prefers **OpticOdds SSE push** when `OPTICODDS_API_KEY` is set, degrades to a **single** The Odds API REST snapshot if only that key exists (no public WebSocket), and degrades to fixtures otherwise. HQ **never** places bets, **never** fake-fills, and **never** runs scrape loops.
+Demo odds ship as fixtures (JSON/CSV). No paid API key is required. Live ingest prefers **OpticOdds realtime** (`OPTICODDS_API_KEY`): **WebSocket first**, then the documented **SSE** stream if WS does not connect (OpticOdds FAQ: they do not offer WebSockets). **Pinnacle** is the sharp benchmark on that same stream. The Odds API is an **optional REST stub** only when no OpticOdds key is set — never preferred, never a silent substitute. Keys are env vars only (never committed, never logged). HQ **never** places bets, **never** fake-fills, and **never** runs scrape loops.
 
 ---
 
@@ -10,38 +10,39 @@ Demo odds ship as fixtures (JSON/CSV). No paid API key is required. Live ingest 
 
 Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel yourself.
 
+**Locked feed:** OpticOdds realtime first (WebSocket attempt → SSE fallback) with Pinnacle as sharp overlay. Odds API is not on the live path.
+
 ```
- fixtures / OpticOdds SSE / Odds API REST snapshot
+ OpticOdds realtime (WS first → SSE)  +  Pinnacle sharp on the same stream
+            │  optional: Odds API REST stub (only if no OpticOdds key)
+            │  offline: fixtures
+            ▼
+     ingest ──► SQLite quotes
             │
             ▼
-     ingest (push-first) ──► SQLite quotes
+     CLV dashboard (scoreboard)  ←  paper log-bet / settle --close-odds
+            │
+            ├─ scan (optional candy) + Pinnacle overlay + fractional Kelly cap 1u
+            ├─ post-result lessons (settle --postmortem/--lesson → next scan)
+            └─ daily −$100 / seasonal −$500 stops (live); kill switch armed
             │
             ▼
-     scan (consensus EV + Pinnacle sharp overlay)
-            │  lessons from prior losses attached
-            ▼
-     you bet on FanDuel mobile ──► log-bet (odds_at_bet required)
-            │
-            ▼
-     settle --close-odds (required) + --postmortem/--lesson on loss
-            │
-            ▼
-     clv-report --gate   avg CLV is the health metric
+     gate 1 historical backtest (same OpticOdds+Pinnacle feed) → ~2–3 week paper → live
 ```
 
 | Layer | What it does | What it does not |
 |---|---|---|
-| **Ingest** | Fixture (dev), OpticOdds **SSE** (push), Odds API **one-shot REST** | WebSocket for Odds API (does not exist). Poll loops. FanDuel login. |
+| **Ingest** | OpticOdds **WebSocket first**, **SSE** if WS fails; Pinnacle on that stream; Odds API **one-shot REST stub**; fixtures | Prefer Odds API. Poll loops. Commit/log keys. FanDuel login. |
 | **Sharp** | Pinnacle as benchmark vs FanDuel retail when the book is on the board | Treat Pinnacle as a bettable Ontario book |
-| **Scan** | ≥3% juice-removed EV vs consensus; refuse keepers if daily/seasonal stop is hit | Place tickets |
-| **Bankroll** | Flat **$25** unit; optional fractional Kelly **capped at 1 unit** | Auto-stake on FanDuel |
-| **Settle** | Require close line; CLV (flat=0); loss postmortem + lesson | Fake fills |
-| **CLV gate** | `FAILING` if n≥100 and avg CLV ≤ 0 | Judge the process on tiny samples |
+| **Scan** | ≥3% juice-removed EV vs consensus; Pinnacle overlay; lessons from prior settles | Place tickets. Replace CLV as the scoreboard. |
+| **Bankroll** | Flat **$25** unit; optional fractional Kelly **capped at 1 unit**; daily **−$100** / seasonal **−$500** | Auto-stake on FanDuel. `--force` bypass of stops or kill switch. |
+| **Settle** | Require close line; CLV (flat=0); optional postmortem + lesson (feedback loop) | Fake fills |
+| **CLV gate** | Paper avg CLV is the **only** scoreboard. `FAILING` if n≥100 and avg CLV ≤ 0 | Judge the process on tiny samples. Unlock live from scan edge. |
 
 **Hypotheses (labeled, not proven):**
 
-- OpticOdds is SSE, not WebSocket (confirmed in their FAQ). A future WS would be a new provider, not a rename.
-- The Odds API has **no public WebSocket** as of 2026; a hinted Quant-tier push is **not** wired.
+- Owner lock is WebSocket-first. OpticOdds FAQ still says they do **not** offer WebSockets; SSE is the documented realtime product. HQ tries WS, then SSE, and will not invent a private WS protocol.
+- The Odds API has **no public WebSocket** as of 2026; a hinted Quant-tier push is **not** wired and is not the live path.
 - Pinnacle multiplicative de-vig is a better “true market” read than a multi-book median. Keepers still use **consensus median**; Pinnacle is an overlay until that is A/B’d.
 - Default season window is **March 20 ET** (MLB-ish), rolling back a year if earlier. Override with `SPORTY_HQ_SEASON_START`.
 - Quarter-Kelly (`--kelly` when `KELLY_FRACTION=0`) is a common fractional default; still hard-capped at 1 unit.
@@ -256,18 +257,18 @@ Live path prefers **streaming/push**, not scrape loops. Fixtures stay for offlin
 | Provider | Transport | Keys | Behavior |
 |---|---|---|---|
 | Fixture JSON/CSV | File | None | Default offline path |
-| OpticOdds | **SSE** `GET /api/v3/stream/odds/{sport}` | `OPTICODDS_API_KEY` | Push. They do **not** offer WebSockets (their FAQ). |
-| The Odds API | REST snapshot | `THE_ODDS_API_KEY` | **No public WebSocket** as of 2026. One snapshot, then stop — not a poll loop. |
+| OpticOdds | **WebSocket first** `wss://api.opticodds.com/api/v3/stream/odds/{sport}`, then **SSE** `GET /api/v3/stream/odds/{sport}` | `OPTICODDS_API_KEY` | Live path. FAQ: no WebSockets — WS attempt then SSE. Pinnacle is a sportsbook on this stream. |
+| The Odds API | REST snapshot | `THE_ODDS_API_KEY` | **Optional stub only.** No public WebSocket. Not used when OpticOdds is keyed. One snapshot, then stop. |
 | Stream stub | `--source stream --replay` | None | Replays a fixture as a push batch so the live path can be tested offline. |
 
 ```bash
-sporty ingest --source auto              # SSE if keyed, else REST snapshot, else fixture
-sporty ingest --source stream            # OpticOdds SSE, else degrade to fixture
+sporty ingest --source auto              # OpticOdds WS→SSE if keyed; else Odds API stub; else fixture
+sporty ingest --source opticodds         # live path only (never Odds API)
 sporty ingest --source stream --replay fixtures/demo_odds.json
-sporty ingest --source oddsapi           # one REST snapshot; degrades to fixture if no key
+sporty ingest --source oddsapi           # optional stub; degrades to fixture if no key
 ```
 
-**Pinnacle** is the sharp benchmark book (`SPORTY_HQ_SHARP_BOOK=pinnacle`). Scan overlays Pin de-vig vs FanDuel retail in the rationale when both sides are present. Hypothesis: Odds API needs `regions=us,us2,eu` for Pinnacle to appear.
+**Pinnacle** is the sharp benchmark book (`SPORTY_HQ_SHARP_BOOK=pinnacle`). Scan overlays Pin de-vig vs FanDuel retail in the rationale when both sides are present. Keys: `OPTICODDS_API_KEY` / `THE_ODDS_API_KEY` env only — never commit `.env`.
 
 Props/period/alternates are dropped. Add a feed in `providers.py` / `streaming.py`.
 
@@ -309,8 +310,8 @@ Dedup is SQLite-unique on `dedup_key`.
 | `SPORTY_HQ_REMIND_MIN_MINUTES` | `30` | Pre-game window start |
 | `SPORTY_HQ_REMIND_MAX_MINUTES` | `60` | Pre-game window end |
 | `SPORTY_HQ_WEBHOOK_URL` | unset | Generic JSON POST (v1 optional) |
-| `THE_ODDS_API_KEY` | unset | REST snapshot (no WS) |
-| `OPTICODDS_API_KEY` | unset | SSE push |
+| `THE_ODDS_API_KEY` | unset | Optional REST stub (never preferred) |
+| `OPTICODDS_API_KEY` | unset | OpticOdds realtime (WS first, SSE fallback) |
 
 Slack (`SPORTY_HQ_ENABLE_SLACK`, `SLACK_WEBHOOK_URL`) is documented for a later pass and is off by default.
 
@@ -323,7 +324,7 @@ Slack (`SPORTY_HQ_ENABLE_SLACK`, `SLACK_WEBHOOK_URL`) is documented for a later 
 ```
 src/sporty_hq/
   cli.py          # ingest (stream stub), scan (stops), log-bet, settle --lesson, clv-report --gate, brief, …
-  streaming.py    # OpticOdds SSE, Odds API WS stub, fixture replay
+  streaming.py    # OpticOdds WS first → SSE; Odds API stub; fixture replay
   bankroll.py     # fractional Kelly (capped), season window
   lessons.py      # postmortem match onto next-slate scans
   brief.py        # Odds Arcade education brief (no bet placement)
