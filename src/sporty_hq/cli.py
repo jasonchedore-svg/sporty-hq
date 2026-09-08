@@ -29,7 +29,7 @@ from sporty_hq.archive import (
     render_audit_markdown,
     save_audit,
 )
-from sporty_hq.backtest import load_historical_closes, run_backtest, save_result
+from sporty_hq.backtest import load_historical_closes, render_backtest_markdown, run_backtest, save_result
 from sporty_hq.bankroll import suggested_stake
 from sporty_hq.config import Settings, load_settings
 from sporty_hq.engine import ScanConfig, score_quotes
@@ -620,6 +620,11 @@ def backtest(
     gaps: Optional[Path] = typer.Option(
         None, "--gaps", help="JSON of documented archive gaps/exclusions"
     ),
+    fmt: str = typer.Option(
+        "md",
+        "--format",
+        help="md (owner report: every assumption + data source) | json",
+    ),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", envvar="SPORTY_HQ_DATA_DIR"),
 ) -> None:
     """Gate 1: historical CLV vs closes. Archive audit is a hard stop first. No bets."""
@@ -665,13 +670,18 @@ def backtest(
         documented_gaps=documented,
     )
     out = save_result(settings.data_dir, result)
+    md_path = settings.data_dir / "backtest.md"
+    report = render_backtest_markdown(result)
+    kind_fmt = (fmt or "md").strip().lower()
+    if kind_fmt not in {"md", "json", "markdown"}:
+        raise typer.BadParameter("format must be md or json")
     if not audit.passed:
-        md = render_audit_markdown(audit)
-        console.print(md)
+        console.print(render_audit_markdown(audit))
+        console.print(report)
         console.print(
             "[red]STOPPED for human review.[/red] Archive audit failed "
             "(coverage / timestamps / true-close). No vanity CLV will be scored. "
-            f"See {settings.data_dir / 'archive_audit.md'}"
+            f"See {settings.data_dir / 'archive_audit.md'} and {md_path}"
         )
         store.record_desk_event(
             kind="archive_audit",
@@ -684,15 +694,18 @@ def backtest(
         kind="backtest",
         trip=None,
         detail=result.note,
-        review_path=str(out),
+        review_path=str(md_path),
     )
-    console.print_json(data=result.to_json_dict())
+    if kind_fmt == "json":
+        console.print_json(data=result.to_json_dict())
+    else:
+        console.print(report)
     console.print(
         f"avg CLV={result.avg_clv} n={result.n} health={result.health} "
         f"cleared={result.cleared} feed_parity={result.feed_parity} "
         f"archive_audit={result.archive_audit_passed} sample={result.sample}"
     )
-    console.print(f"Wrote {out}")
+    console.print(f"Wrote {out} and {md_path}")
     if not result.cleared:
         raise typer.Exit(1)
 

@@ -10,6 +10,8 @@ Demo odds ship as fixtures (JSON/CSV). No paid API key is required. Live ingest 
 
 Hybrid Ontario desk: **research + alerts + CLV log**. You still tap FanDuel yourself.
 
+**Standing order (this phase):** historical backtest is the **only** active workstream until real archive numbers exist. Scan, Odds Arcade brief, lessons, and live ingest stay HOLD — they cannot produce or replace a backtest CLV. The backtest **report** (`data/backtest.md`) must log **every assumption** and **every data source** (feeds, seasons, markets, filters, vig handling, close definition, sample size). If an edge prints, the owner must see exactly which slices produced it.
+
 **Locked feed:** OpticOdds realtime first (WebSocket attempt → SSE fallback) with Pinnacle as sharp overlay. Odds API is not on the live path.
 
 **Feed parity (non-negotiable):** Gate 1 historical backtest **must use this same path** — OpticOdds realtime posted/take (FanDuel) **plus** Pinnacle as the sharp close/benchmark. Do **not** backtest on Pinnacle closing lines alone (or any other retail-only dump) and then go live on OpticOdds. That edge may not exist in production. `sporty backtest` refuses to clear if `posted_feed`/`posted_book` are Pinnacle, Odds API, unlabeled, or otherwise mismatched.
@@ -162,24 +164,24 @@ sporty archive-audit --owner-cleared
 #    posted_feed=opticodds  posted_book=fanduel  close_book=pinnacle  close_kind=true_close
 sporty archive-audit --path /path/to/opticodds-archive.csv --seasons 1
 
-# 3) Grade vs closes (same CLV math as the dashboard). Logs assumptions + data sources.
+# 3) Grade vs closes. Owner report logs EVERY assumption + EVERY data source
+#    (feeds, seasons, markets, filters, vig, close definition, sample size)
+#    plus season/market/sport slices so an edge is traceable.
 sporty backtest --path /path/to/opticodds-archive.csv --seasons 1
 # optional: --gaps fixtures/opticodds_archive_gaps.example.json
-# always writes data/archive_audit.md + .json
-# failed audit: STOP FOR HUMAN REVIEW, avg_clv=null stub in backtest.json, no vanity score
+# writes data/backtest.md (owner report) + data/backtest.json (gate)
+# always writes data/archive_audit.md + .json first
+# failed audit: STOP FOR HUMAN REVIEW, avg_clv=null stub, no vanity score
 # exit 0 only if avg CLV > 0, n ≥ min_n, feed parity, archive audit, and source is not a repo fixture
+# SCHEMA SAMPLE (runnable now, cannot clear gate 1):
+sporty backtest --path fixtures/historical_closes.csv --seasons 1
 
 # Will NOT invent numbers:
 sporty backtest --source opticodds          # fails: need OPTICODDS_API_KEY note + --path export
 sporty backtest                             # fails: --path required
 
-# Schema sample (cannot clear gate 1):
-sporty backtest --path fixtures/historical_closes.csv --seasons 1
-
-sporty clv-report            # paper CLV dashboard
-sporty log-bet ...           # paper default
-sporty log-bet --live        # trips kill switch A until both gates clear
-sporty desk-status
+# HOLD this phase (not the backtest workstream):
+# sporty clv-report / log-bet / scan / brief
 ```
 
 Feed parity: **OpticOdds posted / FanDuel take + Pinnacle close on the same live path.** Pinnacle-only history, Odds API history, or a mismatched retail take **cannot clear**. Odds API is an optional REST stub, not this path.

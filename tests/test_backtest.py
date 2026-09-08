@@ -9,7 +9,15 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from sporty_hq.archive import audit_archive
-from sporty_hq.backtest import HistoricalClose, load_historical_closes, run_backtest, save_result
+from sporty_hq.backtest import (
+    REQUIRED_ASSUMPTION_IDS,
+    REQUIRED_DATA_SOURCE_IDS,
+    HistoricalClose,
+    load_historical_closes,
+    render_backtest_markdown,
+    run_backtest,
+    save_result,
+)
 from sporty_hq.cli import app
 from sporty_hq.feed import evaluate_feed_parity
 from sporty_hq.gates import evaluate_gates
@@ -83,11 +91,20 @@ def test_backtest_clears_on_opticodds_fanduel_plus_pinnacle_true_close() -> None
     assert result.cleared is True
     assert result.sample is False
     ids = {a["id"] for a in result.assumptions}
-    assert {"clv_formula", "vig", "feed_parity", "close_definition", "lookback", "filters", "archive_audit", "caveat"} <= ids
+    assert set(REQUIRED_ASSUMPTION_IDS) <= ids
+    sources = {d["id"] for d in result.data_sources}
+    assert set(REQUIRED_DATA_SOURCE_IDS) <= sources
+    assert result.per_market and result.per_sport and result.per_season
+    md = render_backtest_markdown(result)
+    for key in ("feeds", "seasons", "markets", "filters", "vig", "close definition", "sample size"):
+        assert key in md.lower()
+    assert "Every assumption" in md
+    assert "Every data source" in md
+    assert "ml" in result.per_market
+    assert "mlb" in result.per_sport or "baseball_mlb" in result.per_sport
     assert "backtest ≠ will work again" in result.note or any(
         "will work again" in a["statement"] for a in result.assumptions
     )
-    sources = {d["id"] for d in result.data_sources}
     assert "odds_api" in sources
     assert "archive_file" in sources
 
@@ -105,6 +122,11 @@ def test_last_seen_close_fails_audit_and_cannot_clear() -> None:
     assert result.n == 0
     assert "STOPPED" in result.note
     assert "vanity" in result.note.lower()
+    assert {a["id"] for a in result.assumptions} >= set(REQUIRED_ASSUMPTION_IDS)
+    assert {d["id"] for d in result.data_sources} >= set(REQUIRED_DATA_SOURCE_IDS)
+    md = render_backtest_markdown(result)
+    assert "STOP FOR HUMAN REVIEW" in md
+    assert "Every assumption" in md
 
 
 def test_sample_fixture_cannot_clear_gate(data_dir: Path) -> None:
@@ -114,7 +136,10 @@ def test_sample_fixture_cannot_clear_gate(data_dir: Path) -> None:
     )
     assert r.exit_code == 1, r.output
     assert "sample=True" in r.output or '"sample": true' in r.output.lower() or '"sample": true' in r.output
-    assert "assumptions" in r.output
+    md = (data_dir / "backtest.md").read_text(encoding="utf-8")
+    assert "Every assumption" in md
+    assert "Every data source" in md
+    assert "SAMPLE" in md
     stored = (data_dir / "backtest.json").read_text(encoding="utf-8")
     assert "SAMPLE" in stored or '"sample": true' in stored
     from sporty_hq.config import Settings
@@ -214,6 +239,13 @@ def test_failed_audit_overwrites_prior_cleared_backtest(data_dir: Path, settings
     assert gates.live_unlocked is False
     stored = json.loads((data_dir / "backtest.json").read_text(encoding="utf-8"))
     assert stored["avg_clv"] is None
+    report = (data_dir / "backtest.md").read_text(encoding="utf-8")
+    assert "Every assumption" in report
+    assert "Every data source" in report
+    md = (data_dir / "backtest.md").read_text(encoding="utf-8")
+    assert "Every assumption" in md
+    assert "Every data source" in md
+    assert "STOP FOR HUMAN REVIEW" in md or "STOPPED" in md
 
 
 def test_archive_audit_cli_stops_on_thin_coverage(data_dir: Path) -> None:
@@ -241,3 +273,9 @@ def test_saved_sample_result_does_not_unlock_live(data_dir: Path, settings, stor
     gates = evaluate_gates(store, settings, utcnow())
     assert gates.backtest.cleared is False
     assert gates.live_unlocked is False
+    md = (data_dir / "backtest.md").read_text(encoding="utf-8")
+    assert "Every assumption" in md
+    assert "Every data source" in md
+    assert "SAMPLE" in md
+    for key in ("vig", "close_definition", "markets", "seasons", "filters", "sample_size"):
+        assert key in md
